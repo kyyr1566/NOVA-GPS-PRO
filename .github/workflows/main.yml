@@ -1,0 +1,42 @@
+name: Build NOVA GPS PRO APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract project ZIP
+        run: |
+          unzip -q NovaGpsPro-fixed-with-GitHub-Actions.zip -d nova-project
+          find nova-project -maxdepth 3 -type f | head -50
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Debug APK
+        working-directory: nova-project/NovaGpsPro
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NOVA-GPS-PRO-debug
+          path: nova-project/NovaGpsPro/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
