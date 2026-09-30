@@ -21,6 +21,16 @@
     <string name="radar_range_100km">100 km</string>
     <string name="radar_range_200km">200 km</string>
     <string name="radar_range_300km">300 km</string>
+    <string name="radar_range_400km">400 km</string>
+    <string name="radar_range_custom">Custom…</string>
+    <string name="radar_custom_title">Custom range</string>
+    <string name="radar_custom_value">Value</string>
+    <string name="radar_count_fmt">%1$d destinations</string>
+    <string name="radar_count_one">1 destination</string>
+    <string name="radar_none_in_range">No destinations in range</string>
+    <string name="radar_selected_fmt">%1$s | %2$s | %3$s</string>
+    <string name="radar_bearing_fmt">Target bearing %1$d°</string>
+    <string name="err_custom_range">Enter a value between 10 m and 2000 km</string>
     <string name="radar_gps_fix">GPS FIX</string>
     <string name="radar_fix_locked">LOCK</string>
     <string name="radar_fix_weak">WEAK</string>

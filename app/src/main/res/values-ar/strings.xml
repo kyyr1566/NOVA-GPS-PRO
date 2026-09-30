@@ -20,6 +20,16 @@
     <string name="radar_range_100km">100 كم</string>
     <string name="radar_range_200km">200 كم</string>
     <string name="radar_range_300km">300 كم</string>
+    <string name="radar_range_400km">400 كم</string>
+    <string name="radar_range_custom">مخصص…</string>
+    <string name="radar_custom_title">نطاق مخصص</string>
+    <string name="radar_custom_value">القيمة</string>
+    <string name="radar_count_fmt">%1$d وجهات</string>
+    <string name="radar_count_one">وجهة واحدة</string>
+    <string name="radar_none_in_range">لا توجد وجهات ضمن النطاق</string>
+    <string name="radar_selected_fmt">%1$s | %2$s | %3$s</string>
+    <string name="radar_bearing_fmt">اتجاه الهدف %1$d°</string>
+    <string name="err_custom_range">أدخل قيمة بين 10 م و 2000 كم</string>
     <string name="radar_gps_fix">تثبيت GPS</string>
     <string name="radar_fix_locked">ثابت</string>
     <string name="radar_fix_weak">ضعيف</string>
