@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="nova_bg">#FBF8F1</color>
+    <color name="nova_gold">#2457D6</color>
+    <style name="Theme.Nova" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/nova_bg</item>
+        <item name="android:statusBarColor">@color/nova_bg</item>
+        <item name="android:navigationBarColor">@color/nova_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:colorAccent">@color/nova_gold</item>
+        <item name="android:colorPrimary">@color/nova_gold</item>
+        <item name="android:colorControlActivated">@color/nova_gold</item>
+        <item name="android:textColorHighlight">#552457D6</item>
+    </style>
+</resources>
