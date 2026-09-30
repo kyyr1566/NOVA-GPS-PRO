@@ -5,8 +5,10 @@ import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.TextView
 import com.nova.gpspro.MainActivity
 import com.nova.gpspro.R
+import com.nova.gpspro.data.Destination
 import com.nova.gpspro.data.DestinationRepository
 import com.nova.gpspro.location.GpsState
 import com.nova.gpspro.location.GpsStatus
@@ -14,21 +16,36 @@ import com.nova.gpspro.location.LocationEngine
 import com.nova.gpspro.navigation.GeoMath
 
 /**
- * Saved-location radar. Positions are derived anew from the current GPS coordinate whenever a
- * GPS fix arrives. It never depends on device-orientation or motion input.
+ * Saved-location radar page. Marker positions are derived anew from the current GPS
+ * coordinate on EVERY valid GPS fix — GPS only, never device orientation or motion input.
+ *
+ * Layout (no ScrollView, nothing overlaps the bottom navigation bar):
+ *   header        – title + LIVE chip
+ *   controls      – Auto/Off scan toggle + range selector (100 m … 400 km + custom)
+ *   top GPS HUD   – real GPS FIX state, satellites actually used in the fix, current accuracy
+ *   radar disc    – as large as the space allows; centre = the phone's GPS position
+ *   bottom HUD    – «N destinations | nearest | its distance», or the picked destination's
+ *                   name + live real distance + target bearing while a marker is selected
  */
 class RadarPage(act: MainActivity) : Page(act) {
     private val c = act
     private val radar = RadarView(c)
     private var autoScan = true
     private var selectedRange = RANGES.first()
+    private var customRange = false
     private var lastState: GpsState? = null
-    private var lastAccuracyNanos = Long.MIN_VALUE
     private var savedDestinations = act.app.destinations.all()
+    private var lastTargets: List<RadarTarget> = emptyList()
+    private var selectedId: String? = null
 
     private lateinit var autoOption: View
     private lateinit var offOption: View
-    private lateinit var rangeButton: android.widget.TextView
+    private lateinit var rangeButton: TextView
+    private lateinit var fixValue: TextView
+    private lateinit var satellitesValue: TextView
+    private lateinit var accuracyValue: TextView
+    private lateinit var bottomDot: View
+    private lateinit var bottomText: TextView
 
     override val view: View = c.vbox().apply {
         setPadding(c.dp(16), c.dp(12), c.dp(16), c.dp(12))
@@ -69,15 +86,65 @@ class RadarPage(act: MainActivity) : Page(act) {
         controls.addView(rangeButton, lp(0, weight = 1f).margins(s = c.dp(10)))
         addView(controls, lp())
 
+        // GPS telemetry HUD — always OUTSIDE the radar circle, updated on every GPS event.
+        val gpsHud = c.hbox().apply { setPadding(0, 0, 0, 0) }
+        val fixChip = hudChip(R.string.radar_gps_fix)
+        val satsChip = hudChip(R.string.radar_satellites)
+        val accChip = hudChip(R.string.radar_accuracy)
+        fixValue = fixChip.second; satellitesValue = satsChip.second; accuracyValue = accChip.second
+        gpsHud.addView(fixChip.first, lp(0, weight = 1f))
+        gpsHud.addView(satsChip.first, lp(0, weight = 1f).margins(s = c.dp(8), e = c.dp(8)))
+        gpsHud.addView(accChip.first, lp(0, weight = 1f))
+        addView(gpsHud, lp().margins(b = c.dp(4)))
+
         radar.apply {
             setRange(selectedRange)
             setScanning(autoScan)
-            onTargetClick = { showTarget(it) }
+            onTargetClick = { selectTarget(it) }
+            onBackgroundClick = { clearSelection() }
         }
-        addView(radar, lp(h = 0, weight = 1f).margins(t = c.dp(2)))
+        addView(radar, lp(h = 0, weight = 1f).margins(t = c.dp(4)))
+
+        // Dynamic summary strip below the disc — never covers any marker.
+        val bottomHud = c.hbox().apply {
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundRect(C.CARD, c.dp(14).toFloat(), C.BORDER, c.dp(1))
+            setPadding(c.dp(14), c.dp(12), c.dp(14), c.dp(12))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { if (selectedId != null) clearSelection() }
+        }
+        bottomDot = View(c).apply { background = roundRect(C.TEXT3, c.dp(4).toFloat()) }
+        bottomText = c.text("", 13.5f, C.TEXT, Fonts.medium).apply {
+            gravity = Gravity.CENTER
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
+        bottomHud.addView(bottomDot, LinearLayout.LayoutParams(c.dp(8), c.dp(8)).margins(e = c.dp(9)))
+        bottomHud.addView(bottomText, lp(0, weight = 1f))
+        addView(bottomHud, lp().margins(t = c.dp(4)))
 
         setAutoScan(true)
         updateRangeLabel()
+    }
+
+    /** A small telemetry card: caption + live value, kept outside the radar disc. */
+    private fun hudChip(labelRes: Int): Pair<View, TextView> {
+        val value = c.text("—", 15f, C.TEXT, Fonts.medium).apply {
+            gravity = Gravity.CENTER
+            maxLines = 1
+        }
+        val chip = c.vbox().apply {
+            gravity = Gravity.CENTER
+            background = roundRect(C.CARD, c.dp(13).toFloat(), C.BORDER, c.dp(1))
+            setPadding(c.dp(4), c.dp(7), c.dp(4), c.dp(8))
+            addView(c.text(c.getString(labelRes), 10f, C.TEXT2, Fonts.medium).apply {
+                gravity = Gravity.CENTER
+                maxLines = 1
+            }, lp())
+            addView(value, lp().margins(t = c.dp(1)))
+        }
+        return chip to value
     }
 
     private fun compactOption(label: String, onClick: () -> Unit): View =
@@ -93,13 +160,14 @@ class RadarPage(act: MainActivity) : Page(act) {
     private fun setAutoScan(enabled: Boolean) {
         autoScan = enabled
         radar.setScanning(enabled)
+        if (enabled) render(lastState ?: c.app.gps.state)   // instant return to real data
         if (!::autoOption.isInitialized || !::offOption.isInitialized) return
         paintScanOption(autoOption, enabled)
         paintScanOption(offOption, !enabled)
     }
 
     private fun paintScanOption(option: View, selected: Boolean) {
-        val text = option as android.widget.TextView
+        val text = option as TextView
         if (selected) {
             text.setTextColor(android.graphics.Color.WHITE)
             text.background = gradientRect(0xFF0D9DC4.toInt(), 0xFF087895.toInt(), c.dp(13).toFloat())
@@ -111,22 +179,79 @@ class RadarPage(act: MainActivity) : Page(act) {
         }
     }
 
+    // ------------------------------------------------------------- range selection
+
     private fun showRangeMenu() {
         PopupMenu(c, rangeButton).apply {
             RANGES.forEachIndexed { index, range ->
                 menu.add(0, index, index, rangeText(range)).isCheckable = true
-                menu.findItem(index).isChecked = range == selectedRange
+                menu.findItem(index).isChecked = !customRange && range == selectedRange
             }
+            menu.add(0, MENU_CUSTOM, RANGES.size, c.getString(R.string.radar_range_custom)).isCheckable = true
+            menu.findItem(MENU_CUSTOM).isChecked = customRange
             setOnMenuItemClickListener { item ->
-                selectedRange = RANGES[item.itemId]
-                radar.setRange(selectedRange)
-                refreshTargets()
-                updateRangeLabel()
+                if (item.itemId == MENU_CUSTOM) showCustomRangeDialog()
+                else applyRange(RANGES[item.itemId], custom = false)
                 true
             }
             show()
         }
     }
+
+    /** Applies a new range using the last REAL GPS snapshot (also works while scanning is Off). */
+    private fun applyRange(meters: Double, custom: Boolean) {
+        selectedRange = meters
+        customRange = custom
+        radar.setRange(meters)
+        refreshTargets()
+        updateRangeLabel()
+    }
+
+    private fun showCustomRangeDialog() {
+        val dialog = NovaDialog(c)
+        dialog.title(c.getString(R.string.radar_custom_title))
+        val value = c.input(c.getString(R.string.radar_custom_value), numeric = true)
+        if (customRange) value.setText(previewCustomValue(selectedRange, selectedRange >= 1000.0))
+        var unitKm = !customRange || selectedRange >= 1000.0
+        val mOption = compactOption(c.getString(R.string.u_m)) {}
+        val kmOption = compactOption(c.getString(R.string.u_km)) {}
+        fun paintUnits(kmSelected: Boolean) {
+            paintUnitOption(kmOption, kmSelected)
+            paintUnitOption(mOption, !kmSelected)
+        }
+        mOption.setOnClickListener { unitKm = false; paintUnits(false) }
+        kmOption.setOnClickListener { unitKm = true; paintUnits(true) }
+        val unitRow = c.hbox().apply {
+            background = roundRect(0xFFEAF7FA.toInt(), c.dp(16).toFloat(), 0xFFBDE9EF.toInt(), c.dp(1))
+            setPadding(c.dp(3), c.dp(3), c.dp(3), c.dp(3))
+        }
+        unitRow.addView(mOption, LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        unitRow.addView(kmOption, LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        paintUnits(unitKm)
+        val body = c.vbox().apply {
+            addView(value, lp())
+            addView(unitRow, lp().margins(t = c.dp(10)))
+        }
+        dialog.content(body)
+        dialog.button(c.getString(R.string.cancel), C.TEXT2) { it.dismiss() }
+        dialog.button(c.getString(R.string.confirm), C.GOLD_DEEP, filled = true) {
+            val raw = Destination.parseCoordinate(value.text.toString().trim())
+            val meters = raw?.let { v -> if (unitKm) v * 1000.0 else v }
+            if (meters == null || meters < CUSTOM_MIN_M || meters > CUSTOM_MAX_M) {
+                c.message.error(c.getString(R.string.err_custom_range))
+            } else {
+                applyRange(meters, custom = true)
+                it.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun paintUnitOption(option: View, selected: Boolean) = paintScanOption(option, selected)
+
+    private fun previewCustomValue(meters: Double, inKm: Boolean): String =
+        if (inKm) String.format(java.util.Locale.US, "%.2f", meters / 1000.0)
+        else Math.round(meters).toString()
 
     private fun updateRangeLabel() {
         rangeButton.text = "${c.getString(R.string.radar_range)}  ${rangeText(selectedRange)}  ▾"
@@ -140,8 +265,12 @@ class RadarPage(act: MainActivity) : Page(act) {
         50_000 -> c.getString(R.string.radar_range_50km)
         100_000 -> c.getString(R.string.radar_range_100km)
         200_000 -> c.getString(R.string.radar_range_200km)
-        else -> c.getString(R.string.radar_range_300km)
+        300_000 -> c.getString(R.string.radar_range_300km)
+        400_000 -> c.getString(R.string.radar_range_400km)
+        else -> act.units.distance(range)
     }
+
+    // ------------------------------------------------------------- real GPS data
 
     private fun isRealGpsFix(s: GpsState): Boolean =
         s.location != null && s.provider == LocationManager.GPS_PROVIDER &&
@@ -149,57 +278,104 @@ class RadarPage(act: MainActivity) : Page(act) {
 
     private fun render(state: GpsState) {
         lastState = state
-        val gpsFix = isRealGpsFix(state)
-        val addSample = gpsFix && state.elapsedRealtimeNanos != 0L && state.elapsedRealtimeNanos != lastAccuracyNanos
-        if (addSample) lastAccuracyNanos = state.elapsedRealtimeNanos
-        radar.updateTelemetry(
-            gpsFix = gpsFix,
-            statusLabel = c.getString(radarFixResource(state.gpsStatus)),
-            usedSatellites = state.satellitesUsed,
-            accuracy = state.accuracy.takeIf { gpsFix },
-            formattedAccuracy = if (gpsFix) act.units.accuracy(state.accuracy) else null,
-            labels = RadarLabels(
-                gpsFix = c.getString(R.string.radar_gps_fix),
-                satellites = c.getString(R.string.radar_satellites),
-                accuracy = c.getString(R.string.radar_accuracy),
-                waiting = c.getString(R.string.radar_waiting_fix)
-            ),
-            addAccuracySample = addSample
-        )
+        if (!autoScan) return          // Off: sweep and every radar visual stays frozen (GPS engine itself keeps running)
+        radar.setFixState(isRealGpsFix(state), c.getString(R.string.radar_waiting_fix))
+        paintGpsHud(state)
         refreshTargets()
     }
 
-    private fun radarFixResource(status: GpsStatus): Int = when (status) {
-        GpsStatus.GPS_CONNECTED -> R.string.radar_fix_locked
-        GpsStatus.WEAK_ACCURACY -> R.string.radar_fix_weak
-        else -> R.string.radar_fix_unavailable
+    private fun paintGpsHud(s: GpsState) {
+        val fix = isRealGpsFix(s)
+        val (labelRes, color) = when (s.gpsStatus) {
+            GpsStatus.GPS_CONNECTED -> R.string.radar_fix_locked to C.GREEN
+            GpsStatus.WEAK_ACCURACY -> R.string.radar_fix_weak to C.AMBER
+            else -> R.string.radar_fix_unavailable to C.RED
+        }
+        fixValue.text = c.getString(labelRes)
+        fixValue.setTextColor(color)
+        satellitesValue.text = s.satellitesUsed.coerceAtLeast(0).toString()
+        satellitesValue.setTextColor(if (fix) C.ACCENT else C.TEXT2)
+        accuracyValue.text = if (fix) act.units.accuracy(s.accuracy) else "—"
+        accuracyValue.setTextColor(if (fix) C.ACCENT else C.TEXT2)
     }
 
+    /** Recomputes every distance/bearing from the current fix — markers follow real movement. */
     private fun refreshTargets() {
         val s = lastState
-        if (s == null || !isRealGpsFix(s)) {
-            radar.setTargets(emptyList())
-            return
-        }
-        val withinRange = savedDestinations.mapNotNull { destination ->
+        val withinRange = if (s == null || !isRealGpsFix(s)) emptyList() else savedDestinations.mapNotNull { destination ->
             val geo = GeoMath.between(s.latitude, s.longitude, destination.latitude, destination.longitude)
+            // Only destinations really inside the selected range are ever shown.
             if (geo.distanceM <= selectedRange) RadarTarget(destination.id, destination.name, geo.distanceM, geo.initialBearing) else null
         }
+        lastTargets = withinRange
+        if (selectedId != null && withinRange.none { it.id == selectedId }) selectedId = null
+        radar.setSelected(selectedId)
         radar.setTargets(withinRange)
+        updateBottomHud()
     }
 
-    private fun showTarget(target: RadarTarget) {
-        NovaDialog(c)
-            .title(target.name)
-            .message(c.getString(R.string.radar_distance_fmt, act.units.distance(target.distanceM)))
-            .button(c.getString(R.string.confirm), C.GOLD_DEEP, filled = true) { it.dismiss() }
-            .show()
+    private fun updateBottomHud() {
+        val s = lastState
+        if (s == null || !isRealGpsFix(s)) {
+            paintBottomDot(C.TEXT3)
+            bottomText.text = c.getString(R.string.radar_waiting_fix)
+            return
+        }
+        val selected = selectedId?.let { id -> lastTargets.firstOrNull { it.id == id } }
+        if (selected != null) {
+            paintBottomDot(bandColor(RadarPlot.band(selected.distanceM, selectedRange)))
+            bottomText.text = c.getString(
+                R.string.radar_selected_fmt,
+                selected.name,
+                act.units.distance(selected.distanceM),
+                c.getString(R.string.radar_bearing_fmt, bearingDegrees(selected.bearing))
+            )
+            return
+        }
+        if (lastTargets.isEmpty()) {
+            paintBottomDot(C.TEXT3)
+            bottomText.text = c.getString(R.string.radar_none_in_range)
+            return
+        }
+        val nearest = lastTargets.minByOrNull { it.distanceM } ?: return
+        paintBottomDot(bandColor(RadarPlot.band(nearest.distanceM, selectedRange)))
+        val count = if (lastTargets.size == 1) c.getString(R.string.radar_count_one)
+        else c.getString(R.string.radar_count_fmt, lastTargets.size)
+        bottomText.text = "$count  |  ${nearest.name}  |  ${act.units.distance(nearest.distanceM)}"
+    }
+
+    private fun bearingDegrees(bearing: Float): Int {
+        val v = Math.round(GeoMath.norm360(bearing))
+        return if (v == 360) 0 else v
+    }
+
+    private fun paintBottomDot(color: Int) {
+        bottomDot.background = roundRect(color, c.dp(4).toFloat())
+    }
+
+    private fun bandColor(band: RadarPlot.Band): Int = when (band) {
+        RadarPlot.Band.NEAR -> C.GREEN
+        RadarPlot.Band.MEDIUM -> C.AMBER
+        RadarPlot.Band.FAR -> C.RED
+    }
+
+    private fun selectTarget(target: RadarTarget) {
+        selectedId = target.id
+        radar.setSelected(selectedId)
+        updateBottomHud()
+    }
+
+    private fun clearSelection() {
+        if (selectedId == null) return
+        selectedId = null
+        radar.setSelected(null)
+        updateBottomHud()
     }
 
     private val gpsListener = LocationEngine.Listener { render(it) }
     private val destinationsListener = DestinationRepository.Listener {
         savedDestinations = it
-        refreshTargets()
+        if (autoScan) refreshTargets()
     }
 
     override fun onShow() {
@@ -214,6 +390,9 @@ class RadarPage(act: MainActivity) : Page(act) {
     }
 
     companion object {
-        private val RANGES = doubleArrayOf(100.0, 1_000.0, 10_000.0, 25_000.0, 50_000.0, 100_000.0, 200_000.0, 300_000.0)
+        private val RANGES = doubleArrayOf(100.0, 1_000.0, 10_000.0, 25_000.0, 50_000.0, 100_000.0, 200_000.0, 300_000.0, 400_000.0)
+        private const val MENU_CUSTOM = 100
+        private const val CUSTOM_MIN_M = 10.0
+        private const val CUSTOM_MAX_M = 2_000_000.0
     }
 }
