@@ -14,10 +14,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract project ZIP
-        run: |
-          unzip -q NovaGpsPro-fixed-with-GitHub-Actions.zip -d nova-project
-
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -28,7 +24,6 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build Debug APK
-        working-directory: nova-project
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon --stacktrace assembleDebug
@@ -37,5 +32,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: NOVA-GPS-PRO-debug
-          path: nova-project/app/build/outputs/apk/debug/app-debug.apk
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error

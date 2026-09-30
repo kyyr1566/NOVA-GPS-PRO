@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">NOVA GPS PRO</string>
+    <string name="app_tagline">Precision GPS Navigation</string>
+
+    <string name="tab_home">Home</string>
+    <string name="tab_destinations">Destinations</string>
+    <string name="tab_navigation">Navigation</string>
+    <string name="tab_radar">Radar</string>
+    <string name="tab_settings">Settings</string>
+
+    <string name="radar_live">LIVE GPS</string>
+    <string name="radar_auto">Auto</string>
+    <string name="radar_off">Off</string>
+    <string name="radar_range">Range</string>
+    <string name="radar_range_100m">100 m</string>
+    <string name="radar_range_1km">1 km</string>
+    <string name="radar_range_10km">10 km</string>
+    <string name="radar_range_25km">25 km</string>
+    <string name="radar_range_50km">50 km</string>
+    <string name="radar_range_100km">100 km</string>
+    <string name="radar_range_200km">200 km</string>
+    <string name="radar_range_300km">300 km</string>
+    <string name="radar_gps_fix">GPS FIX</string>
+    <string name="radar_fix_locked">LOCK</string>
+    <string name="radar_fix_weak">WEAK</string>
+    <string name="radar_fix_unavailable">NO FIX</string>
+    <string name="radar_satellites">SAT USED</string>
+    <string name="radar_accuracy">GPS ACCURACY</string>
+    <string name="radar_waiting_fix">WAITING FOR GPS FIX</string>
+    <string name="radar_distance_fmt">Current distance: %1$s</string>
+
+    <string name="status_no_permission">Location permission required</string>
+    <string name="status_disabled">GPS is turned off</string>
+    <string name="status_searching">Searching for satellites…</string>
+    <string name="status_connected">GPS Connected</string>
+    <string name="status_lost">GPS signal lost</string>
+    <string name="status_weak">Weak accuracy</string>
+    <string name="satellites_fmt">Satellites %1$d / %2$d</string>
+    <string name="precise_needed">Precise location is off. Enable it for accurate navigation.</string>
+
+    <string name="grant_permission">Grant Permission</string>
+    <string name="open_location_settings">Turn On Location</string>
+    <string name="open_app_settings">Open App Settings</string>
+    <string name="permission_explain">NOVA GPS PRO needs your location to show coordinates, speed and guide you to destinations. Your location never leaves your device.</string>
+    <string name="permission_denied_forever">Permission was denied. Please enable Location from the app settings.</string>
+
+    <string name="latitude">Latitude</string>
+    <string name="longitude">Longitude</string>
+    <string name="accuracy">Accuracy</string>
+    <string name="save_location">Save Location</string>
+    <string name="current_position">Current Position</string>
+
+    <string name="search_hint">Search destinations</string>
+    <string name="add_destination">Add Destination</string>
+    <string name="edit_destination">Edit Destination</string>
+    <string name="save_current_location">Save Current Location</string>
+    <string name="name">Name</string>
+    <string name="notes_optional">Notes (optional)</string>
+    <string name="photo_optional">Photo (optional)</string>
+    <string name="add_photo">Add Photo</string>
+    <string name="change_photo">Change</string>
+    <string name="remove_photo">Remove</string>
+    <string name="date_time">Date &amp; Time</string>
+    <string name="save">Save</string>
+    <string name="cancel">Cancel</string>
+    <string name="delete">Delete</string>
+    <string name="edit">Edit</string>
+    <string name="share">Share</string>
+    <string name="confirm">Confirm</string>
+    <string name="no_destinations">No destinations yet</string>
+    <string name="no_destinations_hint">Tap + to add a destination, or save your current location from Home.</string>
+    <string name="no_results">No matching destinations</string>
+
+    <string name="err_name_required">Name is required</string>
+    <string name="err_lat">Latitude must be a number between -90 and 90</string>
+    <string name="err_lon">Longitude must be a number between -180 and 180</string>
+    <string name="err_no_fix">No valid GPS fix yet</string>
+    <string name="err_photo">Could not load the photo</string>
+    <string name="err_save">Could not save. Please try again.</string>
+
+    <string name="msg_saved">Saved successfully</string>
+    <string name="msg_updated">Updated successfully</string>
+    <string name="msg_deleted">Destination deleted</string>
+    <string name="msg_cleared">All data cleared</string>
+    <string name="delete_confirm_title">Delete destination?</string>
+    <string name="delete_confirm_msg">“%1$s” will be permanently deleted.</string>
+
+    <string name="share_title">Share destination</string>
+    <string name="share_fmt">📍 %1$s\nLatitude: %2$s\nLongitude: %3$s\nCoordinates: %2$s, %3$s\n%4$s\n— NOVA GPS PRO</string>
+    <string name="notes_label">Notes: %1$s</string>
+
+    <string name="destination">Destination</string>
+    <string name="select_destination">Select Destination</string>
+    <string name="distance_remaining">Distance Remaining</string>
+    <string name="distance_covered">Distance Covered</string>
+    <string name="max_speed">Max Speed</string>
+    <string name="arrival">Arrival</string>
+    <string name="arrived">Arrived</string>
+    <string name="arrival_ready">Arrived at your destination</string>
+    <string name="arrival_detail_fmt">Distance %1$s · accuracy %2$s</string>
+    <string name="reset_trip">Reset Trip</string>
+    <string name="end_navigation">End</string>
+    <string name="hint_move">Start moving to align the arrow with your direction</string>
+    <string name="hint_held">Holding last GPS direction briefly</string>
+    <string name="hint_no_gps">Waiting for a valid GPS fix</string>
+    <string name="hint_no_dest">Choose a destination to start</string>
+    <string name="speed">Speed</string>
+
+    <string name="language">Language</string>
+    <string name="lang_ar" translatable="false">العربية</string>
+    <string name="lang_en" translatable="false">English</string>
+    <string name="distance_unit">Distance Unit</string>
+    <string name="speed_unit">Speed Unit</string>
+    <string name="unit_km_label">KM</string>
+    <string name="unit_mile_label">Mile</string>
+    <string name="unit_kmh_label">KM/H</string>
+    <string name="unit_mph_label">MPH</string>
+    <string name="clear_data">Clear All App Data</string>
+    <string name="clear_data_desc">Deletes all destinations, photos, notes and navigation state.</string>
+    <string name="clear_confirm_title">Clear all data?</string>
+    <string name="clear_confirm_msg">All destinations, photos, notes and navigation state will be permanently deleted. This cannot be undone.</string>
+    <string name="clear">Clear</string>
+    <string name="version_fmt">Version %1$s · Offline</string>
+
+    <string name="u_m">m</string>
+    <string name="u_km">km</string>
+    <string name="u_ft">ft</string>
+    <string name="u_mi">mi</string>
+    <string name="u_kmh">km/h</string>
+    <string name="u_mph">mph</string>
+    <string name="splash_features">GPS Precision • Fast Response • Real-time Direction</string>
+    <string name="splash_phrase_1">Smart navigation powered by GPS</string>
+    <string name="splash_phrase_2">Built for accuracy, stability and speed</string>
+    <string name="splash_short">Precision • Speed • Response</string>
+    <string name="splash_m1">Ultra-precise GPS</string>
+    <string name="splash_m2">Fast response • Real-time direction</string>
+    <string name="splash_m3">Smart, accurate guidance</string>
+    <string name="splash_m4">Stability &amp; reliability</string>
+    <string name="folder_restore_title">Restore saved locations</string>
+    <string name="folder_restore_msg">The folder Documents/GPSarrow contains locations saved earlier. Android requires your permission once to read them: tap Allow, then \"Use this folder\".</string>
+    <string name="folder_restore_allow">Allow</string>
+    <string name="folder_linked">GPSarrow folder linked</string>
+    <string name="speedo_type">Speedometer Type</string>
+    <string name="speedo_circular">Circular</string>
+    <string name="speedo_digital">Digital</string>
+    <string name="tab_portal">Portal</string>
+    <string name="portal_title">Location Portal</string>
+    <string name="portal_export">Export Location</string>
+    <string name="portal_export_desc">Share .locx files</string>
+    <string name="portal_import">Import Location</string>
+    <string name="portal_import_desc">Add from .locx files</string>
+    <string name="portal_qr_create">Create QR</string>
+    <string name="portal_qr_create_desc">Offline location code</string>
+    <string name="portal_qr_scan">Scan QR</string>
+    <string name="portal_qr_scan_desc">Camera or gallery</string>
+    <string name="portal_full_backup_fmt">Full backup — all %1$d locations</string>
+    <string name="portal_select_one">Select at least one location</string>
+    <string name="portal_no_locations">No saved locations yet</string>
+    <string name="portal_share">Share</string>
+    <string name="portal_generate">Create</string>
+    <string name="portal_import_files">Location files</string>
+    <string name="portal_import_files_desc">One or several .locx files</string>
+    <string name="portal_import_full">Full backup</string>
+    <string name="portal_import_full_desc">Restore all locations from a backup file</string>
+    <string name="portal_invalid_file">No valid locations found in the file</string>
+    <string name="portal_qr_too_big">Too much data for one QR. Select fewer locations.</string>
+    <string name="portal_n_locations">%1$d locations</string>
+    <string name="portal_qr_hint">Scan it with NOVA GPS PRO → Portal → Scan QR</string>
+    <string name="portal_from_gallery">From gallery</string>
+    <string name="portal_camera">Camera</string>
+    <string name="portal_camera_denied">Camera permission is required to scan</string>
+    <string name="portal_camera_error">Could not open the camera</string>
+    <string name="portal_scan_hint">Point the camera at the QR code</string>
+    <string name="portal_no_qr">No QR code found in the image</string>
+    <string name="portal_not_location_qr">This QR code does not contain a location</string>
+    <string name="portal_qr_location">QR location</string>
+    <string name="portal_nothing_new">Nothing new</string>
+    <string name="portal_all_duplicates_fmt">All %1$d locations already exist in Destinations.</string>
+    <string name="portal_skipped_fmt">%1$d duplicate location(s) will be skipped</string>
+    <string name="portal_qr_result">Scanned location</string>
+    <string name="portal_saved_fmt">%1$d saved to Destinations</string>
+    <string name="portal_done">Done</string>
+</resources>
