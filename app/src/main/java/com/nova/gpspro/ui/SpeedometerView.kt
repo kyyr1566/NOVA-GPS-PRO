@@ -36,11 +36,11 @@ class SpeedometerView(ctx: Context) : View(ctx) {
     private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; color = C.TRACK }
     private val prog = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
     private val tick = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeCap = Paint.Cap.ROUND }
-    private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; color = SCALE_BLUE; typeface = Fonts.medium }
+    private val label = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; color = C.SCALE_BLUE; typeface = Fonts.medium }
     private val digits = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; color = C.TEXT; typeface = Fonts.light }
     private val unit = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER; color = C.GOLD_DEEP; typeface = Fonts.medium; letterSpacing = 0.1f }
     private val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = C.GREEN }
-    private val dotHalo = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x332FA66A }
+    private val dotHalo = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = C.DOT_HALO }
     private val face = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = C.CARD }
     private val faceRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = C.BORDER }
 
@@ -62,7 +62,7 @@ class SpeedometerView(ctx: Context) : View(ctx) {
         val cx = w / 2f; val cy = h / 2f + s * 0.04f
         oval.set(cx - r, cy - r, cx + r, cy + r)
         track.strokeWidth = stroke; prog.strokeWidth = stroke
-        val sg = SweepGradient(cx, cy, intArrayOf(0xFF8FD9AE.toInt(), C.GREEN, 0xFF1E8C55.toInt(), 0xFF8FD9AE.toInt()), floatArrayOf(0f, 0.35f, 0.66f, 1f))
+        val sg = SweepGradient(cx, cy, intArrayOf(C.GREEN_SOFT, C.GREEN, C.GREEN_DEEP, C.GREEN_SOFT), floatArrayOf(0f, 0.35f, 0.66f, 1f))
         val m = Matrix(); m.setRotate(startAngle - 5f, cx, cy); sg.setLocalMatrix(m)
         prog.shader = sg
         tick.strokeWidth = s * 0.006f
@@ -179,7 +179,6 @@ class SpeedometerView(ctx: Context) : View(ctx) {
     }
 
     companion object {
-        const val SCALE_BLUE = 0xFF1565C0.toInt()
         /** Pure: text shown by BOTH circular and digital modes for a given target/animated value. */
         fun displayText(target: Double, value: Double): String =
             com.nova.gpspro.settings.Units.displayInt(if (abs(target - value) < 0.5) target else value).toString()

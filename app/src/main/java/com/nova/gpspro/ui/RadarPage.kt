@@ -52,9 +52,9 @@ class RadarPage(act: MainActivity) : Page(act) {
 
         val header = c.hbox().apply { gravity = Gravity.CENTER_VERTICAL }
         header.addView(c.text(c.getString(R.string.tab_radar), 24f, C.TEXT, Fonts.medium), lp(0, weight = 1f))
-        header.addView(c.text(c.getString(R.string.radar_live), 11f, 0xFF007E9A.toInt(), Fonts.medium).apply {
+        header.addView(c.text(c.getString(R.string.radar_live), 11f, C.RADAR_CHIP_TEXT, Fonts.medium).apply {
             gravity = Gravity.CENTER
-            background = roundRect(0xFFE2F8FB.toInt(), c.dp(12).toFloat())
+            background = roundRect(C.RADAR_CHIP_BG, c.dp(12).toFloat())
             setPadding(c.dp(10), c.dp(6), c.dp(10), c.dp(6))
             letterSpacing = .04f
         }, lp(android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
@@ -65,7 +65,7 @@ class RadarPage(act: MainActivity) : Page(act) {
             setPadding(0, c.dp(10), 0, c.dp(6))
         }
         val scanChoices = c.hbox().apply {
-            background = roundRect(0xFFEAF7FA.toInt(), c.dp(16).toFloat(), 0xFFBDE9EF.toInt(), c.dp(1))
+            background = roundRect(C.RADAR_SOFT_BG, c.dp(16).toFloat(), C.RADAR_BORDER, c.dp(1))
             setPadding(c.dp(3), c.dp(3), c.dp(3), c.dp(3))
         }
         autoOption = compactOption(c.getString(R.string.radar_auto)) { setAutoScan(true) }
@@ -74,9 +74,9 @@ class RadarPage(act: MainActivity) : Page(act) {
         scanChoices.addView(offOption, LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         controls.addView(scanChoices, lp(c.dp(126)))
 
-        rangeButton = c.text("", 13f, 0xFF075B79.toInt(), Fonts.medium).apply {
+        rangeButton = c.text("", 13f, C.RADAR_TEXT, Fonts.medium).apply {
             gravity = Gravity.CENTER
-            background = ripple(roundRect(0xFFFFFFFF.toInt(), c.dp(15).toFloat(), 0xFFBDE9EF.toInt(), c.dp(1)), c.dp(15).toFloat(), 0x2200B8D4)
+            background = ripple(roundRect(C.RADAR_BTN_BG, c.dp(15).toFloat(), C.RADAR_BORDER, c.dp(1)), c.dp(15).toFloat(), 0x2200B8D4)
             setPadding(c.dp(12), c.dp(10), c.dp(12), c.dp(10))
             isClickable = true
             isFocusable = true
@@ -148,7 +148,7 @@ class RadarPage(act: MainActivity) : Page(act) {
     }
 
     private fun compactOption(label: String, onClick: () -> Unit): View =
-        c.text(label, 12f, 0xFF386D7D.toInt(), Fonts.medium).apply {
+        c.text(label, 12f, C.RADAR_TEXT2, Fonts.medium).apply {
             gravity = Gravity.CENTER
             minHeight = c.dp(35)
             setPadding(c.dp(7), c.dp(7), c.dp(7), c.dp(7))
@@ -170,10 +170,10 @@ class RadarPage(act: MainActivity) : Page(act) {
         val text = option as TextView
         if (selected) {
             text.setTextColor(android.graphics.Color.WHITE)
-            text.background = gradientRect(0xFF0D9DC4.toInt(), 0xFF087895.toInt(), c.dp(13).toFloat())
+            text.background = gradientRect(C.RADAR_SEL_A, C.RADAR_SEL_B, c.dp(13).toFloat())
             text.elevation = c.dp(1).toFloat()
         } else {
-            text.setTextColor(0xFF386D7D.toInt())
+            text.setTextColor(C.RADAR_TEXT2)
             text.background = null
             text.elevation = 0f
         }
@@ -222,7 +222,7 @@ class RadarPage(act: MainActivity) : Page(act) {
         mOption.setOnClickListener { unitKm = false; paintUnits(false) }
         kmOption.setOnClickListener { unitKm = true; paintUnits(true) }
         val unitRow = c.hbox().apply {
-            background = roundRect(0xFFEAF7FA.toInt(), c.dp(16).toFloat(), 0xFFBDE9EF.toInt(), c.dp(1))
+            background = roundRect(C.RADAR_SOFT_BG, c.dp(16).toFloat(), C.RADAR_BORDER, c.dp(1))
             setPadding(c.dp(3), c.dp(3), c.dp(3), c.dp(3))
         }
         unitRow.addView(mOption, LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f))

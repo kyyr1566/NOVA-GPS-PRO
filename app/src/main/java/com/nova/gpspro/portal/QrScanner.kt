@@ -54,8 +54,8 @@ class QrScanner(private val act: MainActivity, private val onText: (String) -> U
         root.addView(act.text(act.getString(R.string.portal_scan_hint), 15f, 0xFFFFFFFF.toInt(), Fonts.medium).apply {
             gravity = Gravity.CENTER; setPadding(act.dp(24), 0, act.dp(24), 0)
         }, FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply { topMargin = act.dp(72) })
-        root.addView(act.text(act.getString(R.string.cancel), 16f, C.GOLD_DEEP, Fonts.medium).apply {
-            gravity = Gravity.CENTER; background = roundRect(0xFFFFFFFF.toInt(), act.dp(24).toFloat())
+        root.addView(act.text(act.getString(R.string.cancel), 16f, C.QR_INK, Fonts.medium).apply {
+            gravity = Gravity.CENTER; background = roundRect(C.QR_BG, act.dp(24).toFloat())
             setPadding(act.dp(36), act.dp(12), act.dp(36), act.dp(12))
             setOnClickListener { dialog.dismiss() }
         }, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = act.dp(56) })

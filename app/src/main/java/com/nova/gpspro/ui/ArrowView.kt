@@ -60,8 +60,8 @@ class ArrowView(ctx: Context) : View(ctx) {
         arrowPath.close()
         leftHalf.reset()
         leftHalf.moveTo(cx, tipY); leftHalf.lineTo(cx, notchY); leftHalf.lineTo(cx - wingX, wingY); leftHalf.close()
-        fill.shader = LinearGradient(cx, tipY, cx, wingY, 0xFF5A8FF2.toInt(), C.ORANGE_DEEP, Shader.TileMode.CLAMP)
-        shade.shader = LinearGradient(cx, tipY, cx, wingY, 0xFF3F6FDC.toInt(), C.GOLD_DEEP, Shader.TileMode.CLAMP)
+        fill.shader = LinearGradient(cx, tipY, cx, wingY, C.ARROW_A, C.ARROW_B, Shader.TileMode.CLAMP)
+        shade.shader = LinearGradient(cx, tipY, cx, wingY, C.ARROW_SHADE_A, C.ARROW_SHADE_B, Shader.TileMode.CLAMP)
         edge.strokeWidth = s * 0.007f; edge.color = 0x55FFFFFF
         fill.setShadowLayer(s * 0.012f, 0f, s * 0.006f, 0x401A44B0)
     }

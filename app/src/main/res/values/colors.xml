@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window / system surfaces. The in-app palette lives in ui/Ui.kt (theme-aware). -->
+    <color name="nova_bg">#FBF8F1</color>
+    <color name="nova_bg_dark">#0A0F16</color>
+    <color name="nova_gold">#2457D6</color>
+    <color name="nova_gold_dark">#6E9BFF</color>
+</resources>

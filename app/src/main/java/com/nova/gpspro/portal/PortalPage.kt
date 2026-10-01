@@ -165,7 +165,7 @@ class PortalPage(act: MainActivity) : Page(act) {
     private fun createQr() = chooseLocations(R.string.portal_qr_create, R.string.portal_generate) { list, _ ->
         val bmp = try {
             val m = QrCodec.encode(QrPayload.encode(list))
-            val px = IntArray(m.width * m.height) { i -> if (m[i % m.width, i / m.width]) C.GOLD_DEEP else -1 }
+            val px = IntArray(m.width * m.height) { i -> if (m[i % m.width, i / m.width]) C.QR_INK else C.QR_BG }
             val small = Bitmap.createBitmap(px, m.width, m.height, Bitmap.Config.ARGB_8888)
             Bitmap.createScaledBitmap(small, m.width * 12, m.height * 12, false)
         } catch (_: Exception) { null } catch (_: OutOfMemoryError) { null }
@@ -173,7 +173,7 @@ class PortalPage(act: MainActivity) : Page(act) {
         val box = c.vbox().apply { gravity = Gravity.CENTER_HORIZONTAL }
         box.addView(ImageView(c).apply {
             setImageBitmap(bmp); adjustViewBounds = true; scaleType = ImageView.ScaleType.FIT_CENTER
-            background = roundRect(0xFFFFFFFF.toInt(), c.dp(18).toFloat(), C.GOLD_LIGHT, c.dp(1))
+            background = roundRect(C.QR_BG, c.dp(18).toFloat(), C.BORDER, c.dp(1))
             setPadding(c.dp(10), c.dp(10), c.dp(10), c.dp(10))
         }, LinearLayout.LayoutParams(c.dp(280), c.dp(280)))
         val label = if (list.size == 1) list[0].name else c.getString(R.string.portal_n_locations, list.size)

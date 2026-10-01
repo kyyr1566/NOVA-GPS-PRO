@@ -55,6 +55,14 @@
     <string name="permission_explain">NOVA GPS PRO needs your location to show coordinates, speed and guide you to destinations. Your location never leaves your device.</string>
     <string name="permission_denied_forever">Permission was denied. Please enable Location from the app settings.</string>
 
+    <string name="gps_pulse" translatable="false">📍 Location pulse</string>
+    <string name="gps_signal_fmt">GPS signal: %1$s</string>
+    <string name="gps_signal_none">no signal</string>
+    <string name="gps_signal_weak">weak</string>
+    <string name="gps_signal_medium">medium</string>
+    <string name="gps_signal_good">good</string>
+    <string name="gps_signal_excellent">excellent</string>
+
     <string name="latitude">Latitude</string>
     <string name="longitude">Longitude</string>
     <string name="accuracy">Accuracy</string>
@@ -151,6 +159,9 @@
     <string name="folder_restore_msg">The folder Documents/GPSarrow contains locations saved earlier. Android requires your permission once to read them: tap Allow, then \"Use this folder\".</string>
     <string name="folder_restore_allow">Allow</string>
     <string name="folder_linked">GPSarrow folder linked</string>
+    <string name="appearance">Appearance</string>
+    <string name="theme_light">☀️ Light</string>
+    <string name="theme_dark">🌙 Dark</string>
     <string name="speedo_type">Speedometer Type</string>
     <string name="speedo_circular">Circular</string>
     <string name="speedo_digital">Digital</string>

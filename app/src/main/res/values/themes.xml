@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="nova_bg">#FBF8F1</color>
-    <color name="nova_gold">#2457D6</color>
+    <!-- ☀️ Light appearance (default, unchanged design) -->
     <style name="Theme.Nova" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/nova_bg</item>
         <item name="android:statusBarColor">@color/nova_bg</item>
@@ -12,5 +11,20 @@
         <item name="android:colorPrimary">@color/nova_gold</item>
         <item name="android:colorControlActivated">@color/nova_gold</item>
         <item name="android:textColorHighlight">#552457D6</item>
+    </style>
+
+    <!-- 🌙 Dark appearance — same design, night surfaces. Every in-app text/data colour comes
+         from the theme-aware palette (ui/Ui.kt), so nothing stays unreadable in this mode. -->
+    <style name="Theme.Nova.Dark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/nova_bg_dark</item>
+        <item name="android:statusBarColor">@color/nova_bg_dark</item>
+        <item name="android:navigationBarColor">@color/nova_bg_dark</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">@color/nova_gold_dark</item>
+        <item name="android:colorPrimary">@color/nova_gold_dark</item>
+        <item name="android:colorControlActivated">@color/nova_gold_dark</item>
+        <item name="android:textColorHighlight">#556E9BFF</item>
+        <item name="android:colorBackground">@color/nova_bg_dark</item>
     </style>
 </resources>

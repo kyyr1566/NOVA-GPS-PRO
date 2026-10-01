@@ -28,7 +28,7 @@ class SplashView(ctx: Context, private val gps: LocationEngine, private val onFi
     private val title = ctx.text(ctx.getString(R.string.app_name), 27f, C.GOLD_DEEP, Fonts.medium).apply {
         gravity = Gravity.CENTER; letterSpacing = 0.24f
     }
-    private val underline = View(ctx).apply { background = gradientRect(0x002457D6, C.GOLD, ctx.dp(1).toFloat()) }
+    private val underline = View(ctx).apply { background = gradientRect(C.GOLD and 0x00FFFFFF, C.GOLD, ctx.dp(1).toFloat()) }
     private val messages = listOf(R.string.splash_m1, R.string.splash_m2, R.string.splash_m3, R.string.splash_m4).map { ctx.getString(it) }
     /** single message slot → messages can never overlap */
     private val message = ctx.text("", 18f, C.TEXT, Fonts.regular).apply {
@@ -44,7 +44,7 @@ class SplashView(ctx: Context, private val gps: LocationEngine, private val onFi
 
     init {
         isClickable = true
-        background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0xFFFFFDF8.toInt(), C.BG, 0xFFF4F1EA.toInt()))
+        background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(C.SPLASH_A, C.BG, C.SPLASH_C))
         val col = ctx.vbox().apply { gravity = Gravity.CENTER_HORIZONTAL }
         col.addView(dial, LinearLayout.LayoutParams(ctx.dp(260), ctx.dp(260)))
         col.addView(title, lp().margins(t = ctx.dp(22)))
@@ -129,8 +129,8 @@ class SplashView(ctx: Context, private val gps: LocationEngine, private val onFi
             arrow.moveTo(cx, cy - r); arrow.lineTo(cx + r * 0.62f, cy + r * 0.72f)
             arrow.lineTo(cx, cy + r * 0.34f); arrow.lineTo(cx - r * 0.62f, cy + r * 0.72f); arrow.close()
             half.reset(); half.moveTo(cx, cy - r); half.lineTo(cx, cy + r * 0.34f); half.lineTo(cx - r * 0.62f, cy + r * 0.72f); half.close()
-            fill.shader = LinearGradient(cx, cy - r, cx, cy + r, 0xFF5A8FF2.toInt(), C.ORANGE_DEEP, Shader.TileMode.CLAMP)
-            shade.shader = LinearGradient(cx, cy - r, cx, cy + r, 0xFF3F6FDC.toInt(), C.GOLD_DEEP, Shader.TileMode.CLAMP)
+            fill.shader = LinearGradient(cx, cy - r, cx, cy + r, C.ARROW_A, C.ARROW_B, Shader.TileMode.CLAMP)
+            shade.shader = LinearGradient(cx, cy - r, cx, cy + r, C.ARROW_SHADE_A, C.ARROW_SHADE_B, Shader.TileMode.CLAMP)
             fill.setShadowLayer(s * 0.025f, 0f, s * 0.01f, 0x401A44B0)
             // fixed index mark at the top (travel direction)
             val R = s * 0.48f

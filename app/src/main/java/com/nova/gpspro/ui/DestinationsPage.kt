@@ -52,7 +52,7 @@ class DestinationsPage(act: MainActivity) : Page(act) {
         val plus = c.text("+", 26f, android.graphics.Color.WHITE, Fonts.light).apply {
             gravity = Gravity.CENTER
             val g = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TL_BR,
-                intArrayOf(0xFF3F74EA.toInt(), C.GOLD_DEEP)).apply { shape = android.graphics.drawable.GradientDrawable.OVAL }
+                intArrayOf(C.PRIMARY_A, C.PRIMARY_B)).apply { shape = android.graphics.drawable.GradientDrawable.OVAL }
             background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x55FFFFFF), g, null)
             softElevation(4f)
             contentDescription = c.getString(R.string.add_destination)

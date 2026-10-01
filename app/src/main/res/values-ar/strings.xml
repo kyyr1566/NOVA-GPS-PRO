@@ -54,6 +54,14 @@
     <string name="permission_explain">يحتاج NOVA GPS PRO إلى موقعك لعرض الإحداثيات والسرعة وإرشادك إلى وجهاتك. موقعك لا يغادر جهازك أبدًا.</string>
     <string name="permission_denied_forever">تم رفض الإذن. يرجى تفعيل الموقع من إعدادات التطبيق.</string>
 
+    <string name="gps_pulse" translatable="false">📍 نبض الموقع</string>
+    <string name="gps_signal_fmt">إشارة GPS: %1$s</string>
+    <string name="gps_signal_none">لا إشارة</string>
+    <string name="gps_signal_weak">ضعيف</string>
+    <string name="gps_signal_medium">متوسط</string>
+    <string name="gps_signal_good">جيد</string>
+    <string name="gps_signal_excellent">ممتاز</string>
+
     <string name="latitude">خط العرض</string>
     <string name="longitude">خط الطول</string>
     <string name="accuracy">الدقة</string>
@@ -148,6 +156,9 @@
     <string name="folder_restore_msg">يحتوي المجلد Documents/GPSarrow على مواقع محفوظة سابقًا. يتطلب Android إذنك مرة واحدة لقراءتها: اضغط «سماح» ثم «استخدام هذا المجلد».</string>
     <string name="folder_restore_allow">سماح</string>
     <string name="folder_linked">تم ربط مجلد GPSarrow</string>
+    <string name="appearance">المظهر</string>
+    <string name="theme_light">☀️ فاتح</string>
+    <string name="theme_dark">🌙 داكن</string>
     <string name="speedo_type">نوع عداد السرعة</string>
     <string name="speedo_circular">دائري</string>
     <string name="speedo_digital">رقمي</string>
