@@ -15,4 +15,21 @@
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_fg</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@color/nova_bg</item>
     </style>
+
+    <!-- 🌙 Dark appearance (chosen in Settings → المظهر) -->
+    <style name="Theme.Nova.Dark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/nova_bg_dark</item>
+        <item name="android:statusBarColor">@color/nova_bg_dark</item>
+        <item name="android:navigationBarColor">@color/nova_bg_dark</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">@color/nova_gold_dark</item>
+        <item name="android:colorPrimary">@color/nova_gold_dark</item>
+        <item name="android:colorControlActivated">@color/nova_gold_dark</item>
+        <item name="android:textColorHighlight">#556E9BFF</item>
+        <item name="android:colorBackground">@color/nova_bg_dark</item>
+        <item name="android:windowSplashScreenBackground">@color/nova_bg_dark</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_fg</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/nova_bg_dark</item>
+    </style>
 </resources>

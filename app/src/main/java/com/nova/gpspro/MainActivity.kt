@@ -20,6 +20,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -56,6 +57,10 @@ class MainActivity : Activity() {
     fun isRtl() = resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_RTL
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Appearance must be selected before the window and any view is created.
+        val darkTheme = SettingsRepository.peekDarkTheme(this)
+        setTheme(if (darkTheme) R.style.Theme_Nova_Dark else R.style.Theme_Nova)
+        C.use(darkTheme)
         super.onCreate(savedInstanceState)
         app = application as NovaApp
         units = Units(this, app.settings)
@@ -81,6 +86,7 @@ class MainActivity : Activity() {
             WindowInsets.CONSUMED
         }
         setContentView(root)
+        applySystemBars()
 
         // Launch splash: on every real launch (fresh Activity), never on internal page
         // switches or on recreate() after a language change (savedInstanceState != null).
@@ -191,6 +197,23 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------- language
     fun applyLanguage() {
         recreate()
+    }
+
+    // ------------------------------------------------------------- appearance
+    /** Rebuilds the UI with the saved ☀️/🌙 appearance (no view survives the switch). */
+    fun applyTheme() {
+        C.use(app.settings.darkTheme)
+        recreate()
+    }
+
+    /** Status/navigation bar follow the palette so no dark text sits on a dark bar. */
+    private fun applySystemBars() {
+        window.statusBarColor = C.BG
+        window.navigationBarColor = C.BG
+        val controller = window.insetsController ?: return
+        val lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+            WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        controller.setSystemBarsAppearance(if (C.dark) 0 else lightBars, lightBars)
     }
 
     // ------------------------------------------------------------- permissions

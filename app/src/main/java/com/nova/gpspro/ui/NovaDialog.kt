@@ -36,7 +36,7 @@ class NovaDialog(private val ctx: Context) {
         dialog.setContentView(wrap)
         dialog.window?.apply {
             setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            setDimAmount(0.25f)
+            setDimAmount(if (C.dark) 0.55f else 0.25f)
             setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
             val w = minOf(ctx.resources.displayMetrics.widthPixels, ctx.dp(460))
             setLayout(w, ViewGroup.LayoutParams.WRAP_CONTENT)

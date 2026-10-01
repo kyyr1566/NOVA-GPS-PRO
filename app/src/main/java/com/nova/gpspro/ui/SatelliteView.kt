@@ -37,7 +37,7 @@ class SatelliteView(ctx: Context) : View(ctx) {
     override fun onDraw(canvas: Canvas) {
         val s = min(width, height).toFloat()
         val cx = width / 2f
-        val satCy = height * 0.36f            // satellite sits a little high, waves travel below it
+        val satCy = height * EMOJI_CENTER_Y      // satellite sits a little high, waves travel below it
         val connected = look == Look.CONNECTED
 
         // ---- transmission waves (connected only)
@@ -78,6 +78,8 @@ class SatelliteView(ctx: Context) : View(ctx) {
     }
 
     companion object {
+        /** Vertical centre of the emoji inside its box (unchanged design value). */
+        const val EMOJI_CENTER_Y = 0.36f
         private const val SAT = "\uD83D\uDEF0\uFE0F"   // 🛰️
         private const val WAVES = 3
         private const val SWEEP = 110f
