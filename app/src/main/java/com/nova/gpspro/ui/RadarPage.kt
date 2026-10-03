@@ -338,10 +338,10 @@ class RadarPage(act: MainActivity) : Page(act) {
             val cn0Readings = ArrayList<Double>(status.satelliteCount)
             for (index in 0 until status.satelliteCount) {
                 if (status.usedInFix(index)) usedInFix++
-                val cn0 = status.cn0DbHz(index)
+                val cn0 = status.getCn0DbHz(index)
                 // Android returns 0 when C/N0 is unavailable; do not turn that into a datapoint.
                 if (cn0.isFinite() && cn0 > 0f) {
-                    val seriesId = "${status.constellationType(index)}:${status.svid(index)}"
+                    val seriesId = "${status.getConstellationType(index)}:${status.getSvid(index)}"
                     if (cn0Graph.addSeriesSample(seriesId, sampleTime, cn0.toDouble())) {
                         cn0Readings.add(cn0.toDouble())
                     }
