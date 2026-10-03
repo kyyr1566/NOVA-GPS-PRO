@@ -30,12 +30,10 @@
     <string name="radar_selected_fmt">%1$s | %2$s | %3$s</string>
     <string name="radar_bearing_fmt">اتجاه الهدف %1$d°</string>
     <string name="err_custom_range">أدخل قيمة بين 10 م و 2000 كم</string>
-    <string name="radar_gps_fix">تثبيت GPS</string>
-    <string name="radar_fix_locked">ثابت</string>
-    <string name="radar_fix_weak">ضعيف</string>
-    <string name="radar_fix_unavailable">لا يوجد تثبيت</string>
-    <string name="radar_satellites">الأقمار المستخدمة</string>
-    <string name="radar_accuracy">دقة GPS</string>
+    <string name="radar_graph_cn0_title">متوسط C/N₀</string>
+    <string name="radar_graph_satellites_title">أقمار مستخدمة</string>
+    <string name="radar_graph_accuracy_title">دقة GPS</string>
+    <string name="radar_graph_unavailable">—</string>
     <string name="radar_waiting_fix">بانتظار تثبيت GPS</string>
     <string name="radar_distance_fmt">المسافة الحالية: %1$s</string>
 

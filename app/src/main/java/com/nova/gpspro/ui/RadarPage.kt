@@ -1,6 +1,8 @@
 package com.nova.gpspro.ui
 
+import android.location.GnssStatus
 import android.location.LocationManager
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
@@ -22,7 +24,8 @@ import com.nova.gpspro.navigation.GeoMath
  * Layout (no ScrollView, nothing overlaps the bottom navigation bar):
  *   header        – title + LIVE chip
  *   controls      – Auto/Off scan toggle + range selector (100 m … 400 km + custom)
- *   top GPS HUD   – real GPS FIX state, satellites actually used in the fix, current accuracy
+ *   top metrics   – small rolling C/N0, used-satellite, and GPS-accuracy graphs from real
+ *                   Android GNSS/GPS callbacks only
  *   radar disc    – as large as the space allows; centre = the phone's GPS position
  *   bottom HUD    – «N destinations | nearest | its distance», or the picked destination's
  *                   name + live real distance + target bearing while a marker is selected
@@ -41,11 +44,15 @@ class RadarPage(act: MainActivity) : Page(act) {
     private lateinit var autoOption: View
     private lateinit var offOption: View
     private lateinit var rangeButton: TextView
-    private lateinit var fixValue: TextView
-    private lateinit var satellitesValue: TextView
-    private lateinit var accuracyValue: TextView
+    private lateinit var cn0Graph: RadarMetricCard
+    private lateinit var satellitesGraph: RadarMetricCard
+    private lateinit var accuracyGraph: RadarMetricCard
     private lateinit var bottomDot: View
     private lateinit var bottomText: TextView
+
+    private val locationManager = c.getSystemService(LocationManager::class.java)
+    private var gnssStatusRegistered = false
+    private var lastAccuracyFixNanos = Long.MIN_VALUE
 
     override val view: View = c.vbox().apply {
         setPadding(c.dp(16), c.dp(12), c.dp(16), c.dp(12))
@@ -86,16 +93,35 @@ class RadarPage(act: MainActivity) : Page(act) {
         controls.addView(rangeButton, lp(0, weight = 1f).margins(s = c.dp(10)))
         addView(controls, lp())
 
-        // GPS telemetry HUD — always OUTSIDE the radar circle, updated on every GPS event.
-        val gpsHud = c.hbox().apply { setPadding(0, 0, 0, 0) }
-        val fixChip = hudChip(R.string.radar_gps_fix)
-        val satsChip = hudChip(R.string.radar_satellites)
-        val accChip = hudChip(R.string.radar_accuracy)
-        fixValue = fixChip.second; satellitesValue = satsChip.second; accuracyValue = accChip.second
-        gpsHud.addView(fixChip.first, lp(0, weight = 1f))
-        gpsHud.addView(satsChip.first, lp(0, weight = 1f).margins(s = c.dp(8), e = c.dp(8)))
-        gpsHud.addView(accChip.first, lp(0, weight = 1f))
-        addView(gpsHud, lp().margins(b = c.dp(4)))
+        // Three square graphs replace the old fix/satellite/accuracy text chips. The row
+        // keeps the exact measured height of those former chips, preserving the radar circle's
+        // size and centre while giving the charts only real GNSS/GPS samples.
+        val graphTileSize = previousTelemetryRowHeight()
+        val graphHud = c.hbox().apply { gravity = Gravity.CENTER }
+        cn0Graph = RadarMetricCard(
+            c,
+            c.getString(R.string.radar_graph_cn0_title),
+            RadarGraphScale.CN0,
+            { value -> RadarMetricCard.cn0Summary(value) }
+        )
+        satellitesGraph = RadarMetricCard(
+            c,
+            c.getString(R.string.radar_graph_satellites_title),
+            RadarGraphScale.SATELLITES_USED,
+            { value -> value.toInt().toString() },
+            C.RADAR_CHIP_TEXT
+        )
+        accuracyGraph = RadarMetricCard(
+            c,
+            c.getString(R.string.radar_graph_accuracy_title),
+            RadarGraphScale.GPS_ACCURACY,
+            { value -> act.units.accuracy(value.toFloat()) },
+            C.RADAR_CHIP_TEXT
+        )
+        graphHud.addView(cn0Graph, LinearLayout.LayoutParams(graphTileSize, graphTileSize).margins(e = c.dp(4)))
+        graphHud.addView(satellitesGraph, LinearLayout.LayoutParams(graphTileSize, graphTileSize).margins(s = c.dp(4), e = c.dp(4)))
+        graphHud.addView(accuracyGraph, LinearLayout.LayoutParams(graphTileSize, graphTileSize).margins(s = c.dp(4)))
+        addView(graphHud, lp(h = graphTileSize).margins(b = c.dp(4)))
 
         radar.apply {
             setRange(selectedRange)
@@ -128,23 +154,21 @@ class RadarPage(act: MainActivity) : Page(act) {
         updateRangeLabel()
     }
 
-    /** A small telemetry card: caption + live value, kept outside the radar disc. */
-    private fun hudChip(labelRes: Int): Pair<View, TextView> {
-        val value = c.text("—", 15f, C.TEXT, Fonts.medium).apply {
-            gravity = Gravity.CENTER
-            maxLines = 1
+    /**
+     * Measures the former two-line HUD chip exactly, so replacing its row with square charts
+     * does not alter the radar's available area or its centre point.
+     */
+    private fun previousTelemetryRowHeight(): Int {
+        fun measuredTextHeight(sizeSp: Float): Int {
+            val sampleText = if (sizeSp == 10f) {
+                if (c.isRtl()) "تثبيت GPS" else "GPS FIX"
+            } else "—"
+            val text = c.text(sampleText, sizeSp, C.TEXT2, Fonts.medium)
+            val unspecified = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+            text.measure(unspecified, unspecified)
+            return text.measuredHeight
         }
-        val chip = c.vbox().apply {
-            gravity = Gravity.CENTER
-            background = roundRect(C.CARD, c.dp(13).toFloat(), C.BORDER, c.dp(1))
-            setPadding(c.dp(4), c.dp(7), c.dp(4), c.dp(8))
-            addView(c.text(c.getString(labelRes), 10f, C.TEXT2, Fonts.medium).apply {
-                gravity = Gravity.CENTER
-                maxLines = 1
-            }, lp())
-            addView(value, lp().margins(t = c.dp(1)))
-        }
-        return chip to value
+        return c.dp(7 + 8 + 1) + measuredTextHeight(10f) + measuredTextHeight(15f)
     }
 
     private fun compactOption(label: String, onClick: () -> Unit): View =
@@ -160,7 +184,7 @@ class RadarPage(act: MainActivity) : Page(act) {
     private fun setAutoScan(enabled: Boolean) {
         autoScan = enabled
         radar.setScanning(enabled)
-        if (enabled) render(lastState ?: c.app.gps.state)   // instant return to real data
+        render(lastState ?: c.app.gps.state)   // scanning only toggles the visual sweep; real data stays live
         if (!::autoOption.isInitialized || !::offOption.isInitialized) return
         paintScanOption(autoOption, enabled)
         paintScanOption(offOption, !enabled)
@@ -272,31 +296,99 @@ class RadarPage(act: MainActivity) : Page(act) {
 
     // ------------------------------------------------------------- real GPS data
 
-    private fun isRealGpsFix(s: GpsState): Boolean =
-        s.location != null && s.provider == LocationManager.GPS_PROVIDER &&
+    private fun isRealGpsFix(s: GpsState): Boolean {
+        val location = s.location ?: return false
+        return s.provider == LocationManager.GPS_PROVIDER &&
+            location.provider == LocationManager.GPS_PROVIDER &&
+            !location.isFromMockProvider &&
             (s.gpsStatus == GpsStatus.GPS_CONNECTED || s.gpsStatus == GpsStatus.WEAK_ACCURACY)
+    }
 
     private fun render(state: GpsState) {
         lastState = state
-        if (!autoScan) return          // Off: sweep and every radar visual stays frozen (GPS engine itself keeps running)
-        radar.setFixState(isRealGpsFix(state), c.getString(R.string.radar_waiting_fix))
-        paintGpsHud(state)
+        val realFix = isRealGpsFix(state)
+        radar.setFixState(realFix, c.getString(R.string.radar_waiting_fix))
+        recordGpsAccuracy(state, realFix)
         refreshTargets()
     }
 
-    private fun paintGpsHud(s: GpsState) {
-        val fix = isRealGpsFix(s)
-        val (labelRes, color) = when (s.gpsStatus) {
-            GpsStatus.GPS_CONNECTED -> R.string.radar_fix_locked to C.GREEN
-            GpsStatus.WEAK_ACCURACY -> R.string.radar_fix_weak to C.AMBER
-            else -> R.string.radar_fix_unavailable to C.RED
+    /** GPS accuracy is sampled once per distinct, accepted real GPS fix. */
+    private fun recordGpsAccuracy(state: GpsState, realFix: Boolean) {
+        val location = state.location
+        if (!realFix || location == null || !location.hasAccuracy() ||
+            !location.accuracy.isFinite() || location.accuracy <= 0f || location.elapsedRealtimeNanos <= 0L) {
+            accuracyGraph.clearCurrent()
+            return
         }
-        fixValue.text = c.getString(labelRes)
-        fixValue.setTextColor(color)
-        satellitesValue.text = s.satellitesUsed.coerceAtLeast(0).toString()
-        satellitesValue.setTextColor(if (fix) C.ACCENT else C.TEXT2)
-        accuracyValue.text = if (fix) act.units.accuracy(s.accuracy) else "—"
-        accuracyValue.setTextColor(if (fix) C.ACCENT else C.TEXT2)
+        val fixNanos = location.elapsedRealtimeNanos
+        val fixMillis = fixNanos / 1_000_000L
+        if (fixNanos != lastAccuracyFixNanos) {
+            if (accuracyGraph.addSample(fixMillis, location.accuracy.toDouble())) {
+                lastAccuracyFixNanos = fixNanos
+            }
+        } else {
+            accuracyGraph.showCurrent(act.units.accuracy(location.accuracy), fixMillis)
+        }
+    }
+
+    private val gnssCallback = object : GnssStatus.Callback() {
+        override fun onSatelliteStatusChanged(status: GnssStatus) {
+            val sampleTime = SystemClock.elapsedRealtime()
+            var usedInFix = 0
+            val cn0Readings = ArrayList<Double>(status.satelliteCount)
+            for (index in 0 until status.satelliteCount) {
+                if (status.usedInFix(index)) usedInFix++
+                val cn0 = status.cn0DbHz(index)
+                // Android returns 0 when C/N0 is unavailable; do not turn that into a datapoint.
+                if (cn0.isFinite() && cn0 > 0f) {
+                    val seriesId = "${status.constellationType(index)}:${status.svid(index)}"
+                    if (cn0Graph.addSeriesSample(seriesId, sampleTime, cn0.toDouble())) {
+                        cn0Readings.add(cn0.toDouble())
+                    }
+                }
+            }
+
+            satellitesGraph.addSample(sampleTime, usedInFix.toDouble())
+            if (cn0Readings.isEmpty()) {
+                cn0Graph.clearCurrent()
+            } else {
+                // The plotted traces are individual satellites; this number is their actual
+                // current mean, not a generated or smoothed signal value.
+                cn0Graph.showCurrent(RadarMetricCard.cn0Summary(cn0Readings.average()), sampleTime)
+            }
+        }
+
+        override fun onStopped() {
+            cn0Graph.clearCurrent()
+            satellitesGraph.clearCurrent()
+        }
+    }
+
+    private fun registerGnssStatus() {
+        if (!act.app.gps.hasFine() || !act.app.gps.isGpsEnabled()) {
+            cn0Graph.clearCurrent()
+            satellitesGraph.clearCurrent()
+            return
+        }
+        gnssStatusRegistered = try {
+            locationManager.registerGnssStatusCallback(c.mainExecutor, gnssCallback)
+        } catch (_: SecurityException) {
+            false
+        } catch (_: IllegalArgumentException) {
+            false
+        }
+        if (!gnssStatusRegistered) {
+            cn0Graph.clearCurrent()
+            satellitesGraph.clearCurrent()
+        }
+    }
+
+    private fun unregisterGnssStatus() {
+        if (!gnssStatusRegistered) return
+        try { locationManager.unregisterGnssStatusCallback(gnssCallback) } catch (_: Exception) {}
+        gnssStatusRegistered = false
+        cn0Graph.clearCurrent()
+        satellitesGraph.clearCurrent()
     }
 
     /** Recomputes every distance/bearing from the current fix — markers follow real movement. */
@@ -323,7 +415,7 @@ class RadarPage(act: MainActivity) : Page(act) {
         }
         val selected = selectedId?.let { id -> lastTargets.firstOrNull { it.id == id } }
         if (selected != null) {
-            paintBottomDot(bandColor(RadarPlot.band(selected.distanceM, selectedRange)))
+            paintBottomDot(C.RED)
             bottomText.text = c.getString(
                 R.string.radar_selected_fmt,
                 selected.name,
@@ -338,7 +430,7 @@ class RadarPage(act: MainActivity) : Page(act) {
             return
         }
         val nearest = lastTargets.minByOrNull { it.distanceM } ?: return
-        paintBottomDot(bandColor(RadarPlot.band(nearest.distanceM, selectedRange)))
+        paintBottomDot(C.RED)
         val count = if (lastTargets.size == 1) c.getString(R.string.radar_count_one)
         else c.getString(R.string.radar_count_fmt, lastTargets.size)
         bottomText.text = "$count  |  ${nearest.name}  |  ${act.units.distance(nearest.distanceM)}"
@@ -351,12 +443,6 @@ class RadarPage(act: MainActivity) : Page(act) {
 
     private fun paintBottomDot(color: Int) {
         bottomDot.background = roundRect(color, c.dp(4).toFloat())
-    }
-
-    private fun bandColor(band: RadarPlot.Band): Int = when (band) {
-        RadarPlot.Band.NEAR -> C.GREEN
-        RadarPlot.Band.MEDIUM -> C.AMBER
-        RadarPlot.Band.FAR -> C.RED
     }
 
     private fun selectTarget(target: RadarTarget) {
@@ -375,18 +461,21 @@ class RadarPage(act: MainActivity) : Page(act) {
     private val gpsListener = LocationEngine.Listener { render(it) }
     private val destinationsListener = DestinationRepository.Listener {
         savedDestinations = it
-        if (autoScan) refreshTargets()
+        refreshTargets()
     }
 
     override fun onShow() {
         savedDestinations = act.app.destinations.all()
         act.app.destinations.addListener(destinationsListener)
         act.app.gps.addListener(gpsListener)
+        registerGnssStatus()
     }
 
     override fun onHide() {
         act.app.destinations.removeListener(destinationsListener)
         act.app.gps.removeListener(gpsListener)
+        unregisterGnssStatus()
+        accuracyGraph.clearCurrent()
     }
 
     companion object {

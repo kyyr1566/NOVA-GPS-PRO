@@ -18,12 +18,9 @@ import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * North-up radar presentation driven by GPS coordinates ONLY — no compass, no sensors,
- * no motion input. The circle's centre is the phone's current GPS position; every marker
- * is placed by [RadarPlot] from real distance/bearing values recomputed on each valid GPS
- * fix, so markers simply appear where the geography puts them (no fake motion, no animation).
- * The rotating sweep is a purely visual scanner effect: it never moves a marker or invents
- * data. GPS readouts (fix / satellites / accuracy) live OUTSIDE the circle, on the page.
+ * GPS-only radar presentation — no compass, sensors, motion input, randomness, or marker
+ * animation. The circle keeps its existing bounds and centre; each destination's polar
+ * position is computed from its real GPS distance and bearing.
  */
 class RadarView(ctx: Context) : View(ctx) {
 
@@ -38,32 +35,42 @@ class RadarView(ctx: Context) : View(ctx) {
     private var hasGpsFix = false
     private var waitingLabel = ""
 
-    private class PlotPoint(val target: RadarTarget, val x: Float, val y: Float, val band: RadarPlot.Band)
+    private class PlotPoint(val target: RadarTarget, val x: Float, val y: Float)
 
-    /** Recomputed only when the data really changed — the sweep never re-places markers. */
+    /** Recomputed only when range, dimensions, or real GPS-derived targets change. */
     private var plotted: List<PlotPoint> = emptyList()
     private var plotDirty = true
     private var sweepShader: Shader? = null
-    private val haloShaders = HashMap<RadarPlot.Band, Shader>()
+    private var discShader: Shader? = null
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
     }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
         typeface = Fonts.medium
     }
 
-    // Deep navy/cyan HUD palette (inside the disc) — the page around it stays light.
-    private val navy = Color.rgb(5, 48, 84)
-    private val aqua = Color.rgb(47, 235, 185)
+    // Fixed-color artwork palette inside the dark radar disc.
+    private val navy = Color.rgb(4, 20, 36)
+    private val deepBlue = Color.rgb(5, 43, 67)
+    private val aqua = Color.rgb(80, 236, 246)
     private val muted = Color.rgb(133, 179, 203)
-    private val sweepGreen = Color.rgb(72, 245, 148)
-    private val nearGreen = Color.rgb(43, 233, 132)
-    private val mediumYellow = Color.rgb(255, 214, 77)
-    private val farRed = Color.rgb(255, 96, 84)
+    private val sweepGreen = Color.rgb(93, 255, 184)
+    private val targetRed = Color.rgb(255, 45, 64)
+    private val targetHalo = Color.rgb(255, 56, 70)
+    private val targetHaloShader: Shader by lazy {
+        val r = dpf(9f)
+        RadialGradient(
+            0f, 0f, r,
+            Color.argb(175, Color.red(targetHalo), Color.green(targetHalo), Color.blue(targetHalo)),
+            Color.argb(0, Color.red(targetHalo), Color.green(targetHalo), Color.blue(targetHalo)),
+            Shader.TileMode.CLAMP
+        )
+    }
 
     init {
         isClickable = true
@@ -79,6 +86,7 @@ class RadarView(ctx: Context) : View(ctx) {
         invalidate()
     }
 
+    /** This toggle controls the decorative sweep only; live GPS targets keep updating. */
     fun setScanning(enabled: Boolean) {
         if (scanning == enabled) return
         scanning = enabled
@@ -109,12 +117,14 @@ class RadarView(ctx: Context) : View(ctx) {
         super.onSizeChanged(w, h, ow, oh)
         plotDirty = true
         sweepShader = null
+        discShader = null
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (width <= 0 || height <= 0) return
 
+        // Do not change this radius or centre: they are the current radar's exact geometry.
         val radius = (min(width, height) / 2f - dp(5)).coerceAtLeast(1f)
         val cx = width / 2f
         val cy = height / 2f
@@ -123,61 +133,85 @@ class RadarView(ctx: Context) : View(ctx) {
         drawDisc(canvas, cx, cy, radius)
         drawGrid(canvas, cx, cy, radius)
         if (scanning) drawSweep(canvas, cx, cy, radius)
-        drawTargets(canvas)
         drawCenter(canvas, cx, cy)
+        drawTargets(canvas)
         if (!hasGpsFix && waitingLabel.isNotEmpty()) drawWaiting(canvas, cx, cy)
 
         if (scanning && isShown) postInvalidateOnAnimation()
     }
 
-    /** Dark blue/cyan scanner disc with a luminous rim — as large as the view allows. */
+    /** Layered navy fill and a restrained luminous rim contained by the existing disc. */
     private fun drawDisc(canvas: Canvas, cx: Float, cy: Float, r: Float) {
-        paint.shader = RadialGradient(
-            cx, cy, r,
-            intArrayOf(Color.rgb(11, 78, 118), navy, Color.rgb(3, 33, 62)),
-            floatArrayOf(0f, .58f, 1f), Shader.TileMode.CLAMP
-        )
+        var fill = discShader
+        if (fill == null) {
+            fill = RadialGradient(
+                cx, cy, r,
+                intArrayOf(Color.rgb(10, 64, 86), deepBlue, navy),
+                floatArrayOf(0f, .57f, 1f),
+                Shader.TileMode.CLAMP
+            )
+            discShader = fill
+        }
+        paint.shader = fill
         canvas.drawCircle(cx, cy, r, paint)
         paint.shader = null
 
+        // Preserve the previous outer glow footprint exactly; added detail stays inside it.
         strokePaint.strokeWidth = dpf(4.5f)
         strokePaint.color = Color.argb(24, 5, 198, 228)
         canvas.drawCircle(cx, cy, r + dpf(1.2f), strokePaint)
         strokePaint.strokeWidth = dpf(1.6f)
-        strokePaint.color = Color.argb(78, 5, 198, 228)
+        strokePaint.color = Color.argb(88, 59, 222, 237)
         canvas.drawCircle(cx, cy, r, strokePaint)
+        strokePaint.strokeWidth = dpf(.7f)
+        strokePaint.color = Color.argb(60, 162, 249, 250)
+        canvas.drawCircle(cx, cy, r - dpf(3.5f), strokePaint)
     }
 
+    /** Fine concentric rings, hairline radial guides and unlabelled bezel graduations. */
     private fun drawGrid(canvas: Canvas, cx: Float, cy: Float, r: Float) {
-        strokePaint.strokeWidth = dpf(1f)
-        strokePaint.color = Color.argb(58, 81, 232, 247)
-        for (fraction in floatArrayOf(.25f, .5f, .75f)) canvas.drawCircle(cx, cy, r * fraction, strokePaint)
-
-        strokePaint.color = Color.argb(34, 87, 226, 243)
-        for (i in 0 until 12) {
-            val a = i * 30.0 * PI / 180.0
-            canvas.drawLine(cx, cy, cx + (cos(a) * r).toFloat(), cy - (sin(a) * r).toFloat(), strokePaint)
+        strokePaint.strokeWidth = dpf(.75f)
+        for ((index, fraction) in floatArrayOf(.22f, .44f, .66f, .88f).withIndex()) {
+            val alpha = if (index == 3) 82 else 47
+            strokePaint.color = Color.argb(alpha, 79, 223, 236)
+            canvas.drawCircle(cx, cy, r * fraction, strokePaint)
         }
-        strokePaint.color = Color.argb(80, 102, 240, 250)
-        strokePaint.strokeWidth = dpf(1.4f)
-        canvas.drawLine(cx - r, cy, cx + r, cy, strokePaint)
-        canvas.drawLine(cx, cy - r, cx, cy + r, strokePaint)
 
-        // Unlabelled calibration bezel — deliberately no direction names anywhere.
-        strokePaint.color = Color.argb(120, 106, 239, 248)
-        strokePaint.strokeWidth = dpf(1f)
-        for (i in 0 until 48) {
-            val a = i * 7.5 * PI / 180.0
-            val longTick = i % 4 == 0
-            val inner = r - dp(if (longTick) 9 else 5)
+        for (i in 0 until 24) {
+            val a = i * 15.0 * PI / 180.0
+            strokePaint.color = if (i % 3 == 0) Color.argb(48, 82, 223, 235) else Color.argb(23, 82, 223, 235)
+            strokePaint.strokeWidth = if (i % 3 == 0) dpf(.8f) else dpf(.55f)
+            canvas.drawLine(
+                cx, cy,
+                cx + (cos(a) * (r - dp(3))).toFloat(),
+                cy - (sin(a) * (r - dp(3))).toFloat(),
+                strokePaint
+            )
+        }
+
+        // Quiet central crosshair, with no direction labels, compass, or range numbers.
+        strokePaint.color = Color.argb(73, 105, 236, 243)
+        strokePaint.strokeWidth = dpf(.75f)
+        canvas.drawLine(cx - r * .88f, cy, cx + r * .88f, cy, strokePaint)
+        canvas.drawLine(cx, cy - r * .88f, cx, cy + r * .88f, strokePaint)
+
+        strokePaint.color = Color.argb(142, 112, 239, 245)
+        strokePaint.strokeWidth = dpf(.85f)
+        for (i in 0 until 72) {
+            val a = i * 5.0 * PI / 180.0
+            val major = i % 6 == 0
+            val mediumTick = i % 3 == 0
+            val length = dp(when { major -> 8; mediumTick -> 5; else -> 3 })
+            val inner = r - length
             canvas.drawLine(
                 cx + (cos(a) * inner).toFloat(), cy - (sin(a) * inner).toFloat(),
-                cx + (cos(a) * r).toFloat(), cy - (sin(a) * r).toFloat(), strokePaint
+                cx + (cos(a) * (r - dp(1))).toFloat(), cy - (sin(a) * (r - dp(1))).toFloat(),
+                strokePaint
             )
         }
     }
 
-    /** Purely decorative scanner sweep — green, glowing, always rotating while scanning. */
+    /** Thin, bright, purely decorative sweep. It never moves or creates a destination. */
     private fun drawSweep(canvas: Canvas, cx: Float, cy: Float, r: Float) {
         val elapsed = (SystemClock.uptimeMillis() - sweepStartedAt) % SWEEP_PERIOD_MS
         val head = elapsed.toFloat() / SWEEP_PERIOD_MS * 360f
@@ -187,81 +221,93 @@ class RadarView(ctx: Context) : View(ctx) {
             shader = SweepGradient(
                 cx, cy,
                 intArrayOf(
-                    colorWithAlpha(sweepGreen, 0), colorWithAlpha(sweepGreen, 0),
-                    colorWithAlpha(sweepGreen, 46), colorWithAlpha(sweepGreen, 122)
+                    colorWithAlpha(sweepGreen, 0),
+                    colorWithAlpha(sweepGreen, 0),
+                    colorWithAlpha(sweepGreen, 10),
+                    colorWithAlpha(sweepGreen, 24),
+                    colorWithAlpha(sweepGreen, 68),
+                    colorWithAlpha(sweepGreen, 178),
+                    colorWithAlpha(sweepGreen, 225)
                 ),
-                floatArrayOf(0f, .70f, .90f, 1f)
+                floatArrayOf(0f, .936f, .973f, .986f, .994f, .998f, 1f)
             )
             sweepShader = shader
         }
         paint.shader = shader
         canvas.save()
         canvas.rotate(head, cx, cy)
-        canvas.drawCircle(cx, cy, r, paint)
+        canvas.drawCircle(cx, cy, r - dpf(1.5f), paint)
         canvas.restore()
         paint.shader = null
 
-        strokePaint.shader = LinearGradient(
-            cx, cy, cx + r, cy,
-            colorWithAlpha(sweepGreen, 0), colorWithAlpha(sweepGreen, 240), Shader.TileMode.CLAMP
-        )
-        strokePaint.strokeWidth = dpf(2f)
+        val endX = cx + r * cos(Math.toRadians(head.toDouble())).toFloat()
+        val endY = cy + r * sin(Math.toRadians(head.toDouble())).toFloat()
         canvas.save()
         canvas.rotate(head, cx, cy)
-        canvas.drawLine(cx, cy, cx + r, cy, strokePaint)
-        canvas.restore()
+        strokePaint.shader = LinearGradient(
+            cx, cy, cx + r - dpf(2f), cy,
+            colorWithAlpha(sweepGreen, 22), colorWithAlpha(sweepGreen, 220), Shader.TileMode.CLAMP
+        )
+        strokePaint.strokeWidth = dpf(3f)
+        canvas.drawLine(cx, cy, cx + r - dpf(2f), cy, strokePaint)
         strokePaint.shader = null
+        strokePaint.color = Color.argb(235, Color.red(sweepGreen), Color.green(sweepGreen), Color.blue(sweepGreen))
+        strokePaint.strokeWidth = dpf(1f)
+        canvas.drawLine(cx, cy, cx + r - dpf(2f), cy, strokePaint)
+        canvas.restore()
 
-        val hr = Math.toRadians(head.toDouble())
         paint.color = sweepGreen
-        canvas.drawCircle(cx + (cos(hr) * r).toFloat(), cy + (sin(hr) * r).toFloat(), dpf(2.2f), paint)
+        canvas.drawCircle(endX, endY, dpf(1.7f), paint)
     }
 
-    /** Small, crisp, glowing markers: strong green near, yellow medium, red far. */
+    /** All saved destinations are the same luminous red, independent of distance band. */
     private fun drawTargets(canvas: Canvas) {
-        val coreR = dpf(2.6f)
-        val rimR = dpf(3.4f)
-        val haloR = dpf(7f)
-        val selR = dpf(6.4f)
-        for (p in plotted) {
-            val color = bandColor(p.band)
-            val selected = p.target.id == selectedId
+        val coreR = dpf(2.8f)
+        val rimR = dpf(4.1f)
+        val haloR = dpf(9f)
+        val selectedR = dpf(6.8f)
+        for (point in plotted) {
+            val selected = point.target.id == selectedId
             canvas.save()
-            canvas.translate(p.x, p.y)
-            paint.shader = haloShader(p.band, haloR)
+            canvas.translate(point.x, point.y)
+
+            paint.shader = targetHaloShader
             canvas.drawCircle(0f, 0f, haloR, paint)
-            if (selected) canvas.drawCircle(0f, 0f, haloR, paint)   // double glow for the picked marker
             paint.shader = null
-            paint.color = color
+
+            paint.color = targetRed
             canvas.drawCircle(0f, 0f, coreR, paint)
-            strokePaint.strokeWidth = dpf(.9f)
-            strokePaint.color = Color.argb(225, 255, 255, 255)
+            strokePaint.color = Color.argb(245, 255, 190, 195)
+            strokePaint.strokeWidth = dpf(.8f)
             canvas.drawCircle(0f, 0f, rimR, strokePaint)
+            paint.color = Color.WHITE
+            canvas.drawCircle(0f, 0f, dpf(.75f), paint)
+
             if (selected) {
-                strokePaint.strokeWidth = dpf(1.4f)
-                strokePaint.color = color
-                canvas.drawCircle(0f, 0f, selR, strokePaint)
-                strokePaint.strokeWidth = dpf(1f)
-                strokePaint.color = Color.argb(130, 255, 255, 255)
-                canvas.drawCircle(0f, 0f, selR + dpf(2.6f), strokePaint)
+                strokePaint.color = targetRed
+                strokePaint.strokeWidth = dpf(1.5f)
+                canvas.drawCircle(0f, 0f, selectedR, strokePaint)
+                strokePaint.color = Color.argb(150, 255, 222, 224)
+                strokePaint.strokeWidth = dpf(.8f)
+                canvas.drawCircle(0f, 0f, selectedR + dpf(2.4f), strokePaint)
             }
             canvas.restore()
         }
     }
 
-    /** The phone itself — the radar's fixed centre (its GPS position). */
+    /** The receiver's GPS position at the exact centre of the radar. */
     private fun drawCenter(canvas: Canvas, cx: Float, cy: Float) {
         val c = if (hasGpsFix) aqua else muted
         val r = Color.red(c); val g = Color.green(c); val b = Color.blue(c)
-        paint.color = Color.argb(if (hasGpsFix) 48 else 26, r, g, b)
+        paint.color = Color.argb(if (hasGpsFix) 43 else 24, r, g, b)
         canvas.drawCircle(cx, cy, dpf(16f), paint)
-        strokePaint.strokeWidth = dpf(1.4f)
-        strokePaint.color = Color.argb(205, r, g, b)
+        strokePaint.strokeWidth = dpf(1.2f)
+        strokePaint.color = Color.argb(210, r, g, b)
         canvas.drawCircle(cx, cy, dpf(8.5f), strokePaint)
         paint.color = c
-        canvas.drawCircle(cx, cy, dpf(3.2f), paint)
-        strokePaint.strokeWidth = dpf(1.1f)
-        strokePaint.color = Color.argb(150, r, g, b)
+        canvas.drawCircle(cx, cy, dpf(3.1f), paint)
+        strokePaint.strokeWidth = dpf(1f)
+        strokePaint.color = Color.argb(144, r, g, b)
         canvas.drawLine(cx - dpf(14f), cy, cx - dpf(6.5f), cy, strokePaint)
         canvas.drawLine(cx + dpf(6.5f), cy, cx + dpf(14f), cy, strokePaint)
         canvas.drawLine(cx, cy - dpf(14f), cx, cy - dpf(6.5f), strokePaint)
@@ -274,36 +320,19 @@ class RadarView(ctx: Context) : View(ctx) {
         canvas.drawText(waitingLabel, cx, cy + dp(34).toFloat(), textPaint)
     }
 
-    /** Re-derives marker positions from the real data — only when that data changed. */
+    /** Exact range-relative distance and true GPS bearing; no overlap nudging. */
     private fun ensurePlotted(cx: Float, cy: Float, radius: Float) {
         if (!plotDirty) return
-        val inner = dpf(26f)                                   // keep the centre marker clear
-        val outer = (radius - dp(11)).coerceAtLeast(inner)     // never past the range ring
-        val planned = RadarPlot.plan(
-            targets, rangeM, inner, outer,
-            separation = dpf(14f), ringStep = dpf(16f)
-        )
-        plotted = planned.map { p ->
-            val a = Math.toRadians((p.bearing - 90f).toDouble())
-            PlotPoint(p.target, cx + (cos(a) * p.radius).toFloat(), cy + (sin(a) * p.radius).toFloat(), p.band)
+        val outer = (radius - dp(11)).coerceAtLeast(0f)
+        plotted = RadarPlot.plan(targets, rangeM, outer).map { plotted ->
+            val bearing = Math.toRadians(plotted.bearing.toDouble())
+            PlotPoint(
+                plotted.target,
+                cx + (sin(bearing) * plotted.radius).toFloat(),
+                cy - (cos(bearing) * plotted.radius).toFloat()
+            )
         }
         plotDirty = false
-    }
-
-    private fun haloShader(band: RadarPlot.Band, radius: Float): Shader = haloShaders.getOrPut(band) {
-        val c = bandColor(band)
-        RadialGradient(
-            0f, 0f, radius,
-            Color.argb(135, Color.red(c), Color.green(c), Color.blue(c)),
-            Color.argb(0, Color.red(c), Color.green(c), Color.blue(c)),
-            Shader.TileMode.CLAMP
-        )
-    }
-
-    private fun bandColor(band: RadarPlot.Band): Int = when (band) {
-        RadarPlot.Band.NEAR -> nearGreen
-        RadarPlot.Band.MEDIUM -> mediumYellow
-        RadarPlot.Band.FAR -> farRed
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -312,9 +341,9 @@ class RadarView(ctx: Context) : View(ctx) {
             MotionEvent.ACTION_UP -> {
                 var hit: PlotPoint? = null
                 var best = Float.MAX_VALUE
-                for (p in plotted) {
-                    val d = distance(event.x, event.y, p.x, p.y)
-                    if (d < best) { best = d; hit = p }
+                for (point in plotted) {
+                    val d = distance(event.x, event.y, point.x, point.y)
+                    if (d < best) { best = d; hit = point }
                 }
                 performClick()
                 if (hit != null && best <= dp(19)) {
@@ -338,6 +367,7 @@ class RadarView(ctx: Context) : View(ctx) {
         Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
 
     private fun dp(value: Int): Int = context.dp(value)
+    private fun dpf(value: Float): Float = value * resources.displayMetrics.density
 
     companion object {
         private const val SWEEP_PERIOD_MS = 3_800L

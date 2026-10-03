@@ -31,12 +31,10 @@
     <string name="radar_selected_fmt">%1$s | %2$s | %3$s</string>
     <string name="radar_bearing_fmt">Target bearing %1$d°</string>
     <string name="err_custom_range">Enter a value between 10 m and 2000 km</string>
-    <string name="radar_gps_fix">GPS FIX</string>
-    <string name="radar_fix_locked">LOCK</string>
-    <string name="radar_fix_weak">WEAK</string>
-    <string name="radar_fix_unavailable">NO FIX</string>
-    <string name="radar_satellites">SAT USED</string>
-    <string name="radar_accuracy">GPS ACCURACY</string>
+    <string name="radar_graph_cn0_title">AVG C/N₀</string>
+    <string name="radar_graph_satellites_title">SAT USED</string>
+    <string name="radar_graph_accuracy_title">GPS ACC.</string>
+    <string name="radar_graph_unavailable">—</string>
     <string name="radar_waiting_fix">WAITING FOR GPS FIX</string>
     <string name="radar_distance_fmt">Current distance: %1$s</string>
 
