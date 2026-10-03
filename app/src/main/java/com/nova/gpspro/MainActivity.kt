@@ -24,6 +24,8 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.nova.gpspro.license.LicenseActivity
+import com.nova.gpspro.license.LicenseState
 import com.nova.gpspro.settings.SettingsRepository
 import com.nova.gpspro.settings.Units
 import com.nova.gpspro.ui.*
@@ -58,6 +60,16 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         app = application as NovaApp
+
+        // License gate (defence in depth – LicenseActivity is the normal entry point). Nothing below
+        // runs without a verified license: no pages are built, no splash, no GPS.
+        if (app.license.check() !is LicenseState.Activated) {
+            startActivity(Intent(this, LicenseActivity::class.java))
+            finish()
+            return
+        }
+        licensed = true
+
         units = Units(this, app.settings)
         current = savedInstanceState?.getInt("page") ?: 0
 
@@ -155,6 +167,7 @@ class MainActivity : Activity() {
     private var askedThisLaunch = false
     private var splashShowing = false
     private var startedOnce = false
+    private var licensed = false
 
     private fun maybeAskPermission() {
         if (!splashShowing && !app.gps.hasPermission() && !askedThisLaunch) { askedThisLaunch = true; requestLocationPermission(false) }
@@ -162,6 +175,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        if (!licensed) return
         isStartedFlag = true
         if (startedOnce) app.destinations.reload()   // pick up changes made in the Files app
         startedOnce = true
@@ -172,10 +186,12 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (!licensed) return
         app.gps.refresh()   // user may return from system settings
     }
 
     override fun onStop() {
+        if (!licensed) { super.onStop(); return }
         if (pageShown) { pages[current].onHide(); pageShown = false }
         isStartedFlag = false
         app.gps.stop()

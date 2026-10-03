@@ -3,3 +3,28 @@ build/
 local.properties
 *.iml
 .idea/
+
+# --- license tooling: secrets & generated artifacts must never be committed ---
+node_modules/
+issued/
+*.pem
+*.key
+*.p8
+*.p12
+.env
+.env.*
+!.env.example
+server/license-server/data/
+*.db
+*.db-wal
+*.db-shm
+
+# --- Android signing material: must never be committed ---
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+*.sqlite
+*.sqlite3
+*.license.txt
+*.record.json

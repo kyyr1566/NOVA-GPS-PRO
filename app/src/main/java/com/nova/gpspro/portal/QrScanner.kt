@@ -1,5 +1,6 @@
 package com.nova.gpspro.portal
 
+import android.app.Activity
 import android.app.Dialog
 import android.content.Context
 import android.graphics.Canvas
@@ -36,7 +37,11 @@ import kotlin.math.min
  * supported on Android 11–16.
  */
 @Suppress("DEPRECATION")
-class QrScanner(private val act: MainActivity, private val onText: (String) -> Unit) : TextureView.SurfaceTextureListener {
+class QrScanner(
+    private val act: Activity,
+    private val onError: ((String) -> Unit)? = null,   // null → MainActivity's message bar (Portal usage)
+    private val onText: (String) -> Unit
+) : TextureView.SurfaceTextureListener {
     private val dialog = Dialog(act, android.R.style.Theme_DeviceDefault_NoActionBar_Fullscreen)
     private val texture = TextureView(act)
     private var camera: Camera? = null
@@ -91,7 +96,7 @@ class QrScanner(private val act: MainActivity, private val onText: (String) -> U
             cam.setPreviewCallbackWithBuffer { data, c -> onFrame(data, c) }
             cam.startPreview()
         } catch (_: Exception) {
-            release(); dialog.dismiss(); act.message.error(act.getString(R.string.portal_camera_error))
+            release(); dialog.dismiss(); act.getString(R.string.portal_camera_error).let { m -> onError?.invoke(m) ?: (act as? MainActivity)?.message?.error(m) }
         }
     }
 

@@ -1,12 +1,32 @@
-name: Build NOVA GPS PRO APK
+name: Android build & unit tests
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
+
+# A newer run for the same branch / PR supersedes an older one.
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only token: the build only needs to read the repository.
+permissions:
+  contents: read
+
+# Public license settings (Settings → Secrets and variables → Actions → Variables). Never a private key.
+# Unset on forks / PRs without them → the debug build is simply "not configured" (cannot activate anything).
+env:
+  LICENSE_SERVER_BASE_URL: ${{ vars.LICENSE_SERVER_BASE_URL }}
+  LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
+  ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
 
 jobs:
+  # Runs on every PR / push: the app must build, and the licensing unit tests must pass.
   build:
     runs-on: ubuntu-latest
 
@@ -23,14 +43,69 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build Debug APK
-        run: |
-          chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleDebug
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      # Compiles the app (main + unit-test sources) and packages the debug APK.
+      - name: Build Debug APK (assembleDebug)
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      # Licensing system only. Gradle fails if the filter matches no test.
+      - name: License unit tests (com.nova.gpspro.license.*)
+        if: ${{ !cancelled() }}
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest --tests "com.nova.gpspro.license.*"
+
+      - name: Upload unit test reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: app/build/reports/tests/
+          if-no-files-found: ignore
 
       - name: Upload APK
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: NOVA-GPS-PRO-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+  # Complete project test suite (all packages, incl. the Navigation tests).
+  # Deliberately NOT part of the PR check: NavigationLogicTest has 4 failures that are identical on main
+  # and unrelated to licensing. It runs on pushes to main / manual runs so that those failures stay
+  # visible (no continue-on-error, no ignored tests) until they are fixed in their own change.
+  full-unit-tests:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: All unit tests (debug)
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+
+      - name: All unit tests (all variants)
+        if: ${{ !cancelled() }}
+        run: ./gradlew --no-daemon --stacktrace test
+
+      - name: Upload unit test reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports-full
+          path: app/build/reports/tests/
+          if-no-files-found: ignore

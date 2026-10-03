@@ -1,0 +1,13 @@
+{
+  "name": "nova-license-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NOVA GPS PRO one-time license activation server (device binding, no accounts).",
+  "license": "UNLICENSED",
+  "main": "server.js",
+  "engines": { "node": ">=22.5.0" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  }
+}
