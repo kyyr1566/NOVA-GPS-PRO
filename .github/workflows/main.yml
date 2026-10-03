@@ -63,15 +63,6 @@ jobs:
           ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
         run: ./gradlew --no-daemon --stacktrace assembleDebug
 
-      - name: DIAG surface gradle errors
-        if: failure()
-        env:
-          LICENSE_SERVER_BASE_URL: ${{ vars.LICENSE_SERVER_BASE_URL }}
-          LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
-          ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
-        run: |
-          echo "::error::SUMMARY $(for f in app/build/test-results/testDebugUnitTest/*.xml; do grep -o '<testsuite name="[^"]*" tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*"' "$f" | sed 's/<testsuite name="com.nova.gpspro.//;s/" tests="/ t=/;s/" skipped="/ s=/;s/" failures="/ f=/'; done | tr '\n' ';')"
-
       - name: Upload unit test reports (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
@@ -81,6 +72,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload APK
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: NOVA-GPS-PRO-debug
