@@ -166,8 +166,9 @@ class BearingEngine {
 
         val p = best ?: return null
 
-        val br = Math.toRadians(initialBearing(p.lat, p.lon, cur.lat, cur.lon).toDouble())
-        val direction = ((Math.toDegrees(atan2(sin(br), cos(br))).toFloat() % 360f) + 360f) % 360f
+        // initialBearing() is already normalized to [0, 360), so no second trig conversion
+        // is needed here. This also keeps the COG path simple and deterministic.
+        val direction = initialBearing(p.lat, p.lon, cur.lat, cur.lon)
 
         val distanceQ = (bestDistance / (bestNeed * 2.0)).coerceIn(0.3, 0.95)
         val durationQ = (bestDt / targetDt).coerceIn(0.65, 1.0)
