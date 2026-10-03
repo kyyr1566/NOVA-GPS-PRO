@@ -48,6 +48,7 @@ jobs:
         run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
 
       - name: Unit tests (all variants)
+        if: ${{ !cancelled() }}
         env:
           LICENSE_SERVER_BASE_URL: ${{ vars.LICENSE_SERVER_BASE_URL }}
           LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
@@ -55,6 +56,7 @@ jobs:
         run: ./gradlew --no-daemon --stacktrace test
 
       - name: Build Debug APK
+        if: ${{ !cancelled() }}
         env:
           LICENSE_SERVER_BASE_URL: ${{ vars.LICENSE_SERVER_BASE_URL }}
           LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
@@ -68,10 +70,10 @@ jobs:
           LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
           ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
         run: |
-          ./gradlew --no-daemon --console=plain testDebugUnitTest --rerun-tasks -i > /tmp/gradle.log 2>&1 || true
-          grep -A3 -E " FAILED$" /tmp/gradle.log | grep -v "^--$" | head -40 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
-          grep -c "PASSED" /tmp/gradle.log || true
-          echo "::error::TAIL: $(tail -n 12 /tmp/gradle.log | tr '\n' '|' | cut -c1-900)"
+          for f in app/build/test-results/testDebugUnitTest/*.xml; do
+            echo "::error::RESULT $(grep -o '<testsuite name="[^"]*" tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' "$f")"
+          done
+          ls -la app/build/outputs/apk/debug/ 2>&1 | while IFS= read -r l; do echo "::error::APK $l"; done
 
       - name: Upload unit test reports (on failure)
         if: failure()
