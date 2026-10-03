@@ -20,18 +20,17 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
-import com.nova.gpspro.license.LicenseActivity
-import com.nova.gpspro.license.LicenseState
 import com.nova.gpspro.settings.SettingsRepository
 import com.nova.gpspro.settings.Units
 import com.nova.gpspro.ui.*
 import java.util.Locale
 
-class MainActivity : Activity() {
+class MainActivity : Activity {
 
     lateinit var app: NovaApp; private set
     lateinit var units: Units; private set
@@ -58,18 +57,12 @@ class MainActivity : Activity() {
     fun isRtl() = resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_RTL
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Appearance must be selected before the window and any view is created.
+        val darkTheme = SettingsRepository.peekDarkTheme(this)
+        setTheme(if (darkTheme) R.style.Theme_Nova_Dark else R.style.Theme_Nova)
+        C.use(darkTheme)
         super.onCreate(savedInstanceState)
         app = application as NovaApp
-
-        // License gate (defence in depth – LicenseActivity is the normal entry point). Nothing below
-        // runs without a verified license: no pages are built, no splash, no GPS.
-        if (app.license.check() !is LicenseState.Activated) {
-            startActivity(Intent(this, LicenseActivity::class.java))
-            finish()
-            return
-        }
-        licensed = true
-
         units = Units(this, app.settings)
         current = savedInstanceState?.getInt("page") ?: 0
 
@@ -93,6 +86,7 @@ class MainActivity : Activity() {
             WindowInsets.CONSUMED
         }
         setContentView(root)
+        applySystemBars()
 
         // Launch splash: on every real launch (fresh Activity), never on internal page
         // switches or on recreate() after a language change (savedInstanceState != null).
@@ -167,7 +161,6 @@ class MainActivity : Activity() {
     private var askedThisLaunch = false
     private var splashShowing = false
     private var startedOnce = false
-    private var licensed = false
 
     private fun maybeAskPermission() {
         if (!splashShowing && !app.gps.hasPermission() && !askedThisLaunch) { askedThisLaunch = true; requestLocationPermission(false) }
@@ -175,23 +168,20 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        if (!licensed) return
         isStartedFlag = true
-        if (startedOnce) app.destinations.reload()   // pick up changes made in the Files app
+        if (startedOnce) app.destinations.reload()
         startedOnce = true
         app.gps.start()
         if (!pageShown) { pages[current].onShow(); pageShown = true }
-        maybeAskPermission()   // deferred until the splash finishes
+        maybeAskPermission()
     }
 
     override fun onResume() {
         super.onResume()
-        if (!licensed) return
-        app.gps.refresh()   // user may return from system settings
+        app.gps.refresh()
     }
 
     override fun onStop() {
-        if (!licensed) { super.onStop(); return }
         if (pageShown) { pages[current].onHide(); pageShown = false }
         isStartedFlag = false
         app.gps.stop()
@@ -204,18 +194,29 @@ class MainActivity : Activity() {
         outState.putInt("page", current)
     }
 
-    // ------------------------------------------------------------- language
     fun applyLanguage() {
         recreate()
     }
 
-    // ------------------------------------------------------------- permissions
+    fun applyTheme() {
+        C.use(app.settings.darkTheme)
+        recreate()
+    }
+
+    private fun applySystemBars() {
+        window.statusBarColor = C.BG
+        window.navigationBarColor = C.BG
+        val controller = window.insetsController ?: return
+        val lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+            WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        controller.setSystemBarsAppearance(if (C.dark) 0 else lightBars, lightBars)
+    }
+
     fun requestLocationPermission(userInitiated: Boolean) {
         val prefs = getSharedPreferences("nova_perm", MODE_PRIVATE)
         val askedBefore = prefs.getBoolean("asked", false)
         val rationale = shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION)
         if (userInitiated && askedBefore && !rationale && !app.gps.hasFine()) {
-            // permanently denied (or approximate only) → system settings
             NovaDialog(this).title(getString(R.string.status_no_permission))
                 .message(getString(R.string.permission_denied_forever))
                 .button(getString(R.string.cancel), C.TEXT2) { it.dismiss() }
@@ -239,7 +240,6 @@ class MainActivity : Activity() {
         try { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) } catch (_: Exception) {}
     }
 
-    // ------------------------------------------------------------- photos
     fun pickPhoto(cb: (Uri?) -> Unit) {
         photoCallback = cb
         val intent = if (Build.VERSION.SDK_INT >= 33) Intent(MediaStore.ACTION_PICK_IMAGES).apply { type = "image/*" }
@@ -267,7 +267,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // ------------------------------------------------------------- GPSarrow folder access (SAF)
     fun requestFolderAccess() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             putExtra(DocumentsContract.EXTRA_INITIAL_URI, LocxFolder.pickerInitialUri())
@@ -277,7 +276,6 @@ class MainActivity : Activity() {
         try { startActivityForResult(i, REQ_FOLDER) } catch (_: Exception) { message.error(getString(R.string.err_save)) }
     }
 
-    // ------------------------------------------------------------- generic result / permission hooks (Portal)
     private var resultCb: ((Boolean, Intent?) -> Unit)? = null
     private var permCb: ((Boolean) -> Unit)? = null
     fun startForResult(i: Intent, cb: (Boolean, Intent?) -> Unit) {
