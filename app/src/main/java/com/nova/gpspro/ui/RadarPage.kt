@@ -394,7 +394,9 @@ class RadarPage(act: MainActivity) : Page(act) {
     private fun refreshTargets() {
         val s = lastState
         val withinRange = if (s == null || !isRealGpsFix(s)) emptyList() else savedDestinations.mapNotNull { destination ->
-            val geo = GeoMath.between(s.latitude, s.longitude, destination.latitude, destination.longitude)
+            val currentLat = if (s.motion.hasPosition) s.motion.latitude else s.latitude
+            val currentLon = if (s.motion.hasPosition) s.motion.longitude else s.longitude
+            val geo = GeoMath.between(currentLat, currentLon, destination.latitude, destination.longitude)
             // Only destinations really inside the selected range are ever shown.
             if (geo.distanceM <= selectedRange) RadarTarget(destination.id, destination.name, geo.distanceM, geo.initialBearing) else null
         }

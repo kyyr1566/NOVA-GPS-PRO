@@ -1,6 +1,7 @@
 package com.nova.gpspro.ui
 
 import android.content.Intent
+import android.location.LocationManager
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.View
@@ -88,7 +89,7 @@ class DestinationsPage(act: MainActivity) : Page(act) {
         row.addView(c.text(d.name, 16f, C.TEXT, Fonts.medium).apply { maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END },
             lp(0, weight = 1f).margins(s = c.dp(14)))
         val g = gps
-        if (g != null && g.isUsable && g.location != null && refPos.hasFix) {
+        if (g != null && g.isUsable && g.location != null && !g.location.isFromMockProvider && refPos.hasFix) {
             val dist = GeoMath.between(refPos.lat, refPos.lon, d.latitude, d.longitude).distanceM
             row.addView(c.text(distText(dist), 13f, C.GOLD_DEEP, Fonts.medium).apply { textDirection = View.TEXT_DIRECTION_LTR },
                 lp(ViewGroup.LayoutParams.WRAP_CONTENT).margins(s = c.dp(8)))
@@ -156,7 +157,12 @@ class DestinationsPage(act: MainActivity) : Page(act) {
         val had = gps?.isUsable == true
         gps = s
         val now = SystemClock.elapsedRealtime()
-        if (s.location != null) refPos.update(s.latitude, s.longitude, s.accuracy, s.isUsable, now) else if (!s.isUsable) refPos.reset()
+        val location = s.location
+        if (location != null && s.isUsable && !location.isFromMockProvider) {
+            val lat = if (s.provider == LocationManager.GPS_PROVIDER && s.motion.hasPosition) s.motion.latitude else s.latitude
+            val lon = if (s.provider == LocationManager.GPS_PROVIDER && s.motion.hasPosition) s.motion.longitude else s.longitude
+            refPos.update(lat, lon, s.accuracy, usable = true, nowMs = now)
+        } else if (location == null || !s.isUsable || location.isFromMockProvider) refPos.reset()
         if (had != s.isUsable || now - lastDistRefresh > 1000) { lastDistRefresh = now; adapter.notifyDataSetChanged() }
     }
 

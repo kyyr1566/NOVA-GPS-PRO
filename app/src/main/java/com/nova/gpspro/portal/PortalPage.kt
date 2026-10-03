@@ -10,6 +10,7 @@ import android.net.Uri
 import android.view.Gravity
 import android.view.View
 import android.widget.CheckBox
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -42,6 +43,28 @@ class PortalPage(act: MainActivity) : Page(act) {
         row2.addView(tile("◈", R.string.portal_qr_create, R.string.portal_qr_create_desc) { createQr() }, lp(0, weight = 1f).margins(e = c.dp(7)))
         row2.addView(tile("◇", R.string.portal_qr_scan, R.string.portal_qr_scan_desc) { scanQr() }, lp(0, weight = 1f).margins(s = c.dp(7)))
         col.addView(row1, lp()); col.addView(row2, lp().margins(t = c.dp(14)))
+
+        val tripsEntry = c.hbox().apply {
+            val r = c.dp(18).toFloat()
+            background = ripple(c.card(18), r)
+            setPadding(c.dp(14), c.dp(10), c.dp(14), c.dp(10))
+            minimumHeight = c.dp(66)
+            isFocusable = true
+            setOnClickListener { act.showPage(MainActivity.PAGE_TRIPS) }
+            addView(c.text("↗", 22f, C.GOLD_DEEP, Fonts.medium).apply {
+                gravity = Gravity.CENTER
+                background = roundRect(C.GOLD_PALE, c.dp(14).toFloat(), C.GOLD_LIGHT, c.dp(1))
+            }, LinearLayout.LayoutParams(c.dp(44), c.dp(44)))
+            val labels = c.vbox().apply {
+                addView(c.text(c.getString(R.string.trips_title), 16f, C.TEXT, Fonts.medium))
+                addView(c.text(c.getString(R.string.portal_trips_desc), 12f, C.TEXT2).apply { maxLines = 1 })
+            }
+            addView(labels, lp(0, weight = 1f).margins(s = c.dp(12)))
+            addView(c.text(if (c.isRtl()) "‹" else "›", 24f, C.TEXT3, Fonts.light).apply { gravity = Gravity.CENTER },
+                LinearLayout.LayoutParams(c.dp(28), c.dp(44)))
+        }
+        val tripsWrap = FrameLayout(c).apply { addView(tripsEntry, FrameLayout.LayoutParams(-1, -2)) }
+        col.addView(tripsWrap, lp().margins(t = c.dp(18), s = c.dp(12), e = c.dp(12)))
         FitScroll(c, col).compressGroups(col).compressPadding(*tiles.toTypedArray())
             .shrinkable(c.dp(118), c.dp(168)) { h -> tiles.forEach { if (it.minimumHeight != h) it.minimumHeight = h } }
     }

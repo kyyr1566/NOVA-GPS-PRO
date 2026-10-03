@@ -72,7 +72,10 @@ class MainActivity : Activity() {
         }
         val column = vbox()
         val content = FrameLayout(this)
-        pages = listOf(HomePage(this), DestinationsPage(this), NavigationPage(this), com.nova.gpspro.portal.PortalPage(this), RadarPage(this), SettingsPage(this))
+        pages = listOf(
+            HomePage(this), DestinationsPage(this), NavigationPage(this),
+            com.nova.gpspro.portal.PortalPage(this), RadarPage(this), SettingsPage(this), TripsPage(this)
+        )
         pages.forEach { content.addView(it.view, FrameLayout.LayoutParams(-1, -1)); it.view.visibility = View.GONE }
         column.addView(content, lp(h = 0, weight = 1f))
         column.addView(buildBottomBar(), lp())
@@ -139,6 +142,11 @@ class MainActivity : Activity() {
 
     fun showPage(i: Int) { if (i != current || !pageShown) selectTab(i) }
 
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (current == PAGE_TRIPS) showPage(PAGE_PORTAL) else super.onBackPressed()
+    }
+
     private fun selectTab(i: Int) {
         if (pageShown) { pages[current].onHide(); pageShown = false }
         pages[current].view.visibility = View.GONE
@@ -146,8 +154,9 @@ class MainActivity : Activity() {
         val v = pages[i].view
         v.alpha = 0f; v.visibility = View.VISIBLE
         v.animate().alpha(1f).setDuration(160).start()
+        val highlightedTab = if (i == PAGE_TRIPS) PAGE_PORTAL else i
         navItems.forEachIndexed { k, (iv, tv) ->
-            val sel = k == i
+            val sel = k == highlightedTab
             iv.imageTintList = ColorStateList.valueOf(if (sel) C.GOLD_DEEP else C.TEXT3)
             tv.setTextColor(if (sel) C.GOLD_DEEP else C.TEXT2)
             (iv.parent as View).background = ripple(
@@ -302,6 +311,9 @@ class MainActivity : Activity() {
     fun clearThumbCache() = thumbs.evictAll()
 
     companion object {
+        const val PAGE_NAVIGATION = 2
+        const val PAGE_PORTAL = 3
+        const val PAGE_TRIPS = 6
         private const val REQ_LOC = 11
         private const val REQ_PHOTO = 12
         private const val REQ_FOLDER = 13

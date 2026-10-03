@@ -1,14 +1,14 @@
 package com.nova.gpspro.navigation
 
 import android.content.Context
+import android.location.LocationManager
 import android.os.SystemClock
+import com.nova.gpspro.R
 import com.nova.gpspro.data.Destination
 import com.nova.gpspro.data.DestinationRepository
 import com.nova.gpspro.location.GpsState
 import com.nova.gpspro.location.LocationEngine
 import java.util.concurrent.CopyOnWriteArraySet
-import kotlin.math.max
-import kotlin.math.min
 
 data class NavState(
     val destination: Destination? = null,
@@ -32,7 +32,7 @@ data class NavState(
  * max speed, arrival with hysteresis and ETA. Session stats are persisted.
  */
 class NavigationEngine(
-    context: Context,
+    private val context: Context,
     private val gpsEngine: LocationEngine,
     private val repo: DestinationRepository
 ) {
@@ -51,13 +51,13 @@ class NavigationEngine(
     private var arrived = false
     private var anchorLat = Double.NaN
     private var anchorLon = Double.NaN
-    private var anchorNanos = 0L
+    private var anchorMotionSegment = 0L
     private var etaSpeed = 0.0
     private var lastPersist = 0L
 
     init {
         val id = prefs.getString(KEY_DEST, null)
-        destination = id?.let { repo.get(it) }
+        destination = restoreDestination(id)
         covered = prefs.getFloat(KEY_COVERED, 0f).toDouble()
         maxSpeed = prefs.getFloat(KEY_MAX, 0f).toDouble()
         gpsEngine.addListener { onGps(it) }
@@ -92,20 +92,35 @@ class NavigationEngine(
     private fun resetSessionInternal() {
         covered = 0.0; maxSpeed = 0.0; arrived = false; etaSpeed = 0.0
         arrival.reset()
-        anchorLat = Double.NaN; anchorLon = Double.NaN
+        anchorLat = Double.NaN; anchorLon = Double.NaN; anchorMotionSegment = 0L
         arrow.reset()
     }
 
     private fun syncDestination() {
         val cur = destination ?: return
+        if (isTripEndpoint(cur.id)) return   // a recorded GPS endpoint is not a saved Destinations entry
         val fresh = repo.get(cur.id)
         if (fresh == null) setDestination(null)
         else if (fresh != cur) { destination = fresh; arrived = false; arrival.reset(); onGps(gpsEngine.state) }
     }
 
+    /** Restores a real trip endpoint snapshot when the trip was not linked to a saved place. */
+    private fun restoreDestination(id: String?): Destination? {
+        if (id == null) return null
+        repo.get(id)?.let { return it }
+        if (!isTripEndpoint(id) || !prefs.getBoolean(KEY_TEMP, false)) return null
+        val lat = prefs.getString(KEY_TEMP_LAT, null)?.toDoubleOrNull()?.takeIf { it.isFinite() && it in -90.0..90.0 } ?: return null
+        val lon = prefs.getString(KEY_TEMP_LON, null)?.toDoubleOrNull()?.takeIf { it.isFinite() && it in -180.0..180.0 } ?: return null
+        val name = prefs.getString(KEY_TEMP_NAME, null)?.takeIf { it.isNotBlank() } ?: context.getString(R.string.trip_endpoint_name)
+        return Destination(id, name, lat, lon, createdAt = prefs.getLong(KEY_TEMP_CREATED, System.currentTimeMillis()))
+    }
+
+    private fun isTripEndpoint(id: String) = id.startsWith(TRIP_ENDPOINT_PREFIX)
+
     private fun onGps(g: GpsState) {
         val d = destination
-        val fix = g.isUsable && g.location != null
+        val location = g.location
+        val fix = g.isUsable && location != null && !location.isFromMockProvider
         if (!fix) {
             publish(NavState(destination = d, gps = g, hasFix = false,
                 distanceCoveredM = covered, maxSpeedMps = maxSpeed, arrived = arrived, arrivalEventId = arrival.eventId,
@@ -113,20 +128,23 @@ class NavigationEngine(
             return
         }
 
-        // --- distance covered (anchor based → GPS noise does not accumulate)
-        if (d != null) {
-            if (anchorLat.isNaN() || g.reanchored) {
-                anchorLat = g.latitude; anchorLon = g.longitude
-                anchorNanos = g.elapsedRealtimeNanos
-            } else {
-                val step = GeoMath.between(anchorLat, anchorLon, g.latitude, g.longitude).distanceM
-                val minStep = max(3.0, min(g.accuracy.toDouble() * 0.6, 15.0))
-                if (step >= minStep && (g.speed >= 0.5 || step > g.accuracy * 2)) {
-                    covered += step
-                    anchorLat = g.latitude; anchorLon = g.longitude; anchorNanos = g.elapsedRealtimeNanos
-                }
+        // --- distance covered: only confirmed GPS movement can advance this session total.
+        // Raw fixes and exact geodesic math remain available; stationary jitter never accumulates.
+        val gpsMotion = g.provider == LocationManager.GPS_PROVIDER && g.motion.hasPosition && g.motion.isMoving
+        if (d != null && gpsMotion) {
+            if (anchorLat.isNaN() || anchorMotionSegment != g.motion.segmentId) {
+                anchorLat = g.motion.movementStartLatitude
+                anchorLon = g.motion.movementStartLongitude
+                anchorMotionSegment = g.motion.segmentId
+            }
+            val step = GeoMath.between(anchorLat, anchorLon, g.motion.latitude, g.motion.longitude).distanceM
+            if (step >= 0.5) {
+                covered += step
+                anchorLat = g.motion.latitude; anchorLon = g.motion.longitude
             }
             if (g.accuracy <= 50f && g.speed > maxSpeed) maxSpeed = g.speed
+        } else if (d != null) {
+            anchorLat = Double.NaN; anchorLon = Double.NaN; anchorMotionSegment = 0L
         }
 
         if (d == null) {
@@ -134,18 +152,21 @@ class NavigationEngine(
             return
         }
 
-        val geo = GeoMath.between(g.latitude, g.longitude, d.latitude, d.longitude)
-        val angle = arrow.update(geo.initialBearing, g)
+        val measureLat = if (g.provider == LocationManager.GPS_PROVIDER && g.motion.hasPosition) g.motion.latitude else g.latitude
+        val measureLon = if (g.provider == LocationManager.GPS_PROVIDER && g.motion.hasPosition) g.motion.longitude else g.longitude
+        val displayGeo = GeoMath.between(measureLat, measureLon, d.latitude, d.longitude)
+        val rawGeo = GeoMath.between(g.latitude, g.longitude, d.latitude, d.longitude)
+        val angle = arrow.update(displayGeo.initialBearing, g)
 
-        // --- arrival with hysteresis (threshold adapts to accuracy, never too small)
-        arrived = arrival.update(geo.distanceM, g.accuracy)
+        // Arrival keeps its exact raw-fix calculation; the stable reference is for distance display.
+        arrived = arrival.update(rawGeo.distanceM, g.accuracy)
 
-        // --- ETA from a calm speed average
+        // --- ETA from a calm speed average and the jitter-stable display distance
         etaSpeed = if (etaSpeed <= 0) g.speed else etaSpeed + 0.15 * (g.speed - etaSpeed)
-        val eta = if (!arrived && etaSpeed >= 1.0) System.currentTimeMillis() + (geo.distanceM / etaSpeed * 1000).toLong() else -1L
+        val eta = if (!arrived && etaSpeed >= 1.0) System.currentTimeMillis() + (displayGeo.distanceM / etaSpeed * 1000).toLong() else -1L
 
         persist(force = false)
-        publish(NavState(d, g, true, geo.distanceM, geo.initialBearing, angle, arrow.mode,
+        publish(NavState(d, g, true, displayGeo.distanceM, displayGeo.initialBearing, angle, arrow.mode,
             covered, maxSpeed, g.speed, arrived, eta, arrival.eventId, g.accuracy))
     }
 
@@ -155,6 +176,11 @@ class NavigationEngine(
         lastPersist = now
         prefs.edit()
             .putString(KEY_DEST, destination?.id)
+            .putBoolean(KEY_TEMP, destination?.let { isTripEndpoint(it.id) } == true)
+            .putString(KEY_TEMP_NAME, destination?.takeIf { isTripEndpoint(it.id) }?.name)
+            .putString(KEY_TEMP_LAT, destination?.takeIf { isTripEndpoint(it.id) }?.latitude?.toString())
+            .putString(KEY_TEMP_LON, destination?.takeIf { isTripEndpoint(it.id) }?.longitude?.toString())
+            .putLong(KEY_TEMP_CREATED, destination?.takeIf { isTripEndpoint(it.id) }?.createdAt ?: 0L)
             .putFloat(KEY_COVERED, covered.toFloat())
             .putFloat(KEY_MAX, maxSpeed.toFloat())
             .apply()
@@ -168,8 +194,14 @@ class NavigationEngine(
     }
 
     companion object {
+        const val TRIP_ENDPOINT_PREFIX = "trip-endpoint:"
         private const val KEY_DEST = "dest_id"
         private const val KEY_COVERED = "covered"
         private const val KEY_MAX = "max_speed"
+        private const val KEY_TEMP = "trip_endpoint"
+        private const val KEY_TEMP_NAME = "trip_endpoint_name"
+        private const val KEY_TEMP_LAT = "trip_endpoint_lat"
+        private const val KEY_TEMP_LON = "trip_endpoint_lon"
+        private const val KEY_TEMP_CREATED = "trip_endpoint_created"
     }
 }

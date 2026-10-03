@@ -39,5 +39,7 @@ data class GpsState(
     /** raw accepted fix (for exact geodesic math). null when there is no usable fix. */
     val location: Location? = null,
     /** true when this fix re-anchored after a gap/jump (distance accumulators must not add it). */
-    val reanchored: Boolean = false
+    val reanchored: Boolean = false,
+    /** Display-only stationary reference; raw coordinates and accuracy above remain untouched. */
+    val motion: GpsMotionFilter.Snapshot = GpsMotionFilter.Snapshot()
 )

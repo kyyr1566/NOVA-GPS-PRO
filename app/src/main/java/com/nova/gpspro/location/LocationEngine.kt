@@ -29,6 +29,8 @@ class LocationEngine(private val ctx: Context) {
     private val filter = GpsQualityFilter()
     private val speedEngine = SpeedEngine()
     private val bearingEngine = BearingEngine()
+    private val motionFilter = GpsMotionFilter()
+    private var motionSnapshot = GpsMotionFilter.Snapshot()
     private val listeners = CopyOnWriteArraySet<Listener>()
 
     var state: GpsState = GpsState(GpsStatus.SEARCHING); private set
@@ -124,7 +126,8 @@ class LocationEngine(private val ctx: Context) {
 
     private fun resetFix() {
         lastAccepted = null
-        filter.reset(); speedEngine.reset(); bearingEngine.reset()
+        filter.reset(); speedEngine.reset(); bearingEngine.reset(); motionFilter.reset()
+        motionSnapshot = GpsMotionFilter.Snapshot()
         weakLatched = false
         satUsed = 0; satVisible = 0
     }
@@ -193,7 +196,27 @@ class LocationEngine(private val ctx: Context) {
         bearingEngine.update(loc, reanchor)
         lastAccepted = loc
         lastAcceptedReanchor = reanchor
-        if (isGps) { lastGpsFixNanos = loc.elapsedRealtimeNanos; hadGpsFix = true }
+        if (isGps) {
+            lastGpsFixNanos = loc.elapsedRealtimeNanos
+            hadGpsFix = true
+            if (loc.isFromMockProvider) {
+                motionFilter.reset()
+                motionSnapshot = GpsMotionFilter.Snapshot()
+            } else {
+                val elapsedMs = if (loc.elapsedRealtimeNanos > 0L) loc.elapsedRealtimeNanos / 1_000_000L else SystemClock.elapsedRealtime()
+                motionSnapshot = motionFilter.update(
+                    GpsMotionFilter.Fix(
+                        latitude = loc.latitude,
+                        longitude = loc.longitude,
+                        accuracyM = loc.accuracy,
+                        elapsedRealtimeMs = elapsedMs,
+                        reportedSpeedMps = if (loc.hasSpeed() && loc.speed.isFinite()) loc.speed.toDouble() else null,
+                        speedAccuracyMps = if (loc.hasSpeedAccuracy()) loc.speedAccuracyMetersPerSecond else null
+                    ),
+                    reanchored = reanchor
+                )
+            }
+        }
         publish(evaluate(loc))
     }
 
@@ -231,7 +254,8 @@ class LocationEngine(private val ctx: Context) {
             elapsedRealtimeNanos = loc.elapsedRealtimeNanos,
             isUsable = loc.accuracy <= USABLE_ACCURACY_M,
             location = loc,
-            reanchored = fresh != null && lastAcceptedReanchor
+            reanchored = fresh != null && lastAcceptedReanchor,
+            motion = if (isGps && !loc.isFromMockProvider) motionSnapshot else GpsMotionFilter.Snapshot()
         )
     }
 
