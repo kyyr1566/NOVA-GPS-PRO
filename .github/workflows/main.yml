@@ -1,10 +1,18 @@
-name: Build NOVA GPS PRO APK
+name: Android build & unit tests
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
+
+# A newer run for the same branch / PR supersedes an older one.
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Read-only token: the build only needs to read the repository.
 permissions:
@@ -27,15 +35,39 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build Debug APK
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      # Public license settings (Settings → Secrets and variables → Actions → Variables). Never a private key.
+      # Unset on forks / PRs without them → the debug build is simply "not configured" (cannot activate anything).
+      - name: Unit tests (debug)
         env:
-          # Public license settings (Settings → Secrets and variables → Actions → Variables). Never a private key.
           LICENSE_SERVER_BASE_URL: ${{ vars.LICENSE_SERVER_BASE_URL }}
           LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
           ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
-        run: |
-          chmod +x gradlew
-          ./gradlew --no-daemon --stacktrace assembleDebug
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+
+      - name: Unit tests (all variants)
+        env:
+          LICENSE_SERVER_BASE_URL: ${{ vars.LICENSE_SERVER_BASE_URL }}
+          LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
+          ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
+        run: ./gradlew --no-daemon --stacktrace test
+
+      - name: Build Debug APK
+        env:
+          LICENSE_SERVER_BASE_URL: ${{ vars.LICENSE_SERVER_BASE_URL }}
+          LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
+          ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Upload unit test reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: app/build/reports/tests/
+          if-no-files-found: ignore
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
