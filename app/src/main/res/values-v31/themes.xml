@@ -15,4 +15,18 @@
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_fg</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@color/nova_bg</item>
     </style>
+    <style name="Theme.Nova.License" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/license_bg</item>
+        <item name="android:statusBarColor">@color/license_bg</item>
+        <item name="android:navigationBarColor">@color/license_bg</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">@color/nova_gold</item>
+        <item name="android:colorPrimary">@color/nova_gold</item>
+        <item name="android:colorControlActivated">@color/nova_gold</item>
+        <item name="android:textColorHighlight">#553A6DE6</item>
+        <item name="android:windowSplashScreenBackground">@color/license_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_fg</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/license_bg</item>
+    </style>
 </resources>

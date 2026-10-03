@@ -24,6 +24,11 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Build Debug APK
+        env:
+          # Public license settings (Settings → Secrets and variables → Actions → Variables). Never a private key.
+          LICENSE_SERVER_BASE_URL: ${{ vars.LICENSE_SERVER_BASE_URL }}
+          LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
+          ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
         run: |
           chmod +x gradlew
           ./gradlew --no-daemon --stacktrace assembleDebug

@@ -191,4 +191,26 @@
     <string name="portal_qr_result">Scanned location</string>
     <string name="portal_saved_fmt">%1$d saved to Destinations</string>
     <string name="portal_done">Done</string>
+
+    <!-- License activation -->
+    <string name="license_title">Activate NOVA GPS PRO</string>
+    <string name="license_desc">NOVA GPS PRO needs a valid license. Enter your license code or scan its QR to unlock the app on this device. Internet is needed for the first activation only.</string>
+    <string name="license_hint">License code</string>
+    <string name="license_activate">Activate License</string>
+    <string name="license_scan_qr">Scan QR</string>
+    <string name="license_gallery">From gallery</string>
+    <string name="license_device_id">Device ID</string>
+    <string name="license_device_copied">Device ID copied</string>
+    <string name="license_one_time">One-time purchase · one device</string>
+    <string name="license_status_verifying">Verifying license…</string>
+    <string name="license_status_success">NOVA GPS PRO activated successfully</string>
+    <string name="license_err_empty">Enter or scan your license code</string>
+    <string name="license_err_version">This license version is not supported</string>
+    <string name="license_err_not_configured">Activation is not available in this build yet</string>
+    <string name="license_err_storage">Could not save the license securely on this device</string>
+    <string name="license_err_unavailable">Activation is currently unavailable. Please try again later</string>
+    <string name="license_err_invalid">Invalid license code</string>
+    <string name="license_err_bound">This license is already bound to another device</string>
+    <string name="license_err_internet">Internet connection is required for first activation</string>
+    <string name="license_err_revoked">This license has been disabled</string>
 </resources>
