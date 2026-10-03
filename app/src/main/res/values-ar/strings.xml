@@ -54,6 +54,14 @@
     <string name="permission_explain">يحتاج NOVA GPS PRO إلى موقعك لعرض الإحداثيات والسرعة وإرشادك إلى وجهاتك. موقعك لا يغادر جهازك أبدًا.</string>
     <string name="permission_denied_forever">تم رفض الإذن. يرجى تفعيل الموقع من إعدادات التطبيق.</string>
 
+    <string name="gps_pulse" translatable="false">📍 نبض الموقع</string>
+    <string name="gps_signal_fmt">إشارة GPS: %1$s</string>
+    <string name="gps_signal_none">لا إشارة</string>
+    <string name="gps_signal_weak">ضعيف</string>
+    <string name="gps_signal_medium">متوسط</string>
+    <string name="gps_signal_good">جيد</string>
+    <string name="gps_signal_excellent">ممتاز</string>
+
     <string name="latitude">خط العرض</string>
     <string name="longitude">خط الطول</string>
     <string name="accuracy">الدقة</string>
@@ -148,6 +156,9 @@
     <string name="folder_restore_msg">يحتوي المجلد Documents/GPSarrow على مواقع محفوظة سابقًا. يتطلب Android إذنك مرة واحدة لقراءتها: اضغط «سماح» ثم «استخدام هذا المجلد».</string>
     <string name="folder_restore_allow">سماح</string>
     <string name="folder_linked">تم ربط مجلد GPSarrow</string>
+    <string name="appearance">المظهر</string>
+    <string name="theme_light">☀️ فاتح</string>
+    <string name="theme_dark">🌙 داكن</string>
     <string name="speedo_type">نوع عداد السرعة</string>
     <string name="speedo_circular">دائري</string>
     <string name="speedo_digital">رقمي</string>
@@ -188,26 +199,4 @@
     <string name="portal_qr_result">الموقع الممسوح</string>
     <string name="portal_saved_fmt">تم حفظ %1$d في الوجهات</string>
     <string name="portal_done">تم</string>
-
-    <!-- License activation -->
-    <string name="license_title">تفعيل NOVA GPS PRO</string>
-    <string name="license_desc">يحتاج NOVA GPS PRO إلى ترخيص صالح. أدخل رمز الترخيص أو امسح رمز QR لتفعيل التطبيق على هذا الجهاز. الإنترنت مطلوب للتفعيل الأول فقط.</string>
-    <string name="license_hint">رمز الترخيص</string>
-    <string name="license_activate">تفعيل الترخيص</string>
-    <string name="license_scan_qr">مسح QR</string>
-    <string name="license_gallery">من الاستديو</string>
-    <string name="license_device_id">معرّف الجهاز</string>
-    <string name="license_device_copied">تم نسخ معرّف الجهاز</string>
-    <string name="license_one_time">شراء لمرة واحدة · جهاز واحد</string>
-    <string name="license_status_verifying">جارٍ التحقق من الترخيص…</string>
-    <string name="license_status_success">تم تفعيل NOVA GPS PRO بنجاح</string>
-    <string name="license_err_empty">أدخل رمز الترخيص أو امسحه</string>
-    <string name="license_err_version">إصدار هذا الترخيص غير مدعوم</string>
-    <string name="license_err_not_configured">التفعيل غير متاح في هذه النسخة بعد</string>
-    <string name="license_err_storage">تعذّر حفظ الترخيص بأمان على هذا الجهاز</string>
-    <string name="license_err_unavailable">التفعيل غير متاح حاليًا، حاول مرة أخرى لاحقًا</string>
-    <string name="license_err_invalid">رمز الترخيص غير صالح</string>
-    <string name="license_err_bound">هذا الترخيص مرتبط بجهاز آخر</string>
-    <string name="license_err_internet">يتطلب التفعيل الأول اتصالًا بالإنترنت</string>
-    <string name="license_err_revoked">تم تعطيل هذا الترخيص</string>
 </resources>
