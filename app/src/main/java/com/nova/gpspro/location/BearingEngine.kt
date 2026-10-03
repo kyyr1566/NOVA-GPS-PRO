@@ -210,7 +210,7 @@ class BearingEngine {
         const val MIN_BASELINE_FRACTION = 0.60
 
         const val FAST_BASELINE_MPS = 1.20       // ~4.3 km/h
-        const val WALK_BASELINE_MPS = 0.70       // ~2.5 km/h
+        const val WALK_BASELINE_MPS = 0.90       // ~2.5 km/h
         const val SLOW_WALK_MPS = 0.45           // ~1.6 km/h
 
         const val FAST_BASELINE_S = 1.8
