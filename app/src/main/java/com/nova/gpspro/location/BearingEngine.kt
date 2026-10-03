@@ -159,7 +159,7 @@ class BearingEngine {
                 best = p
                 bestDt = dt
                 bestDistance = d
-                bestNeed = need
+                bestNeed = need.toDouble()
                 bestScore = score
             }
         }
