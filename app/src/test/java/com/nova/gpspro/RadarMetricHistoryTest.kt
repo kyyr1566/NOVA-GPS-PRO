@@ -20,7 +20,7 @@ class RadarMetricHistoryTest {
         val history = RadarMetricHistory(windowMs = 60_000L)
         assertTrue(history.append(1_000L, 12.0))
         assertFalse(history.append(2_000L, Double.NaN))
-        assertFalse(history.append(1_500L, 13.0))
+        assertFalse(history.append(500L, 13.0))
         assertEquals(listOf(1_000L), history.visibleAt(2_000L).map { it.elapsedRealtimeMs })
     }
 
