@@ -1,3 +1,8 @@
+import java.io.File
+import java.net.URI
+import java.util.Base64
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -16,7 +21,7 @@ plugins {
 // (fail closed). Release builds (assemble/bundle/package…Release) REFUSE to build unless all three
 // are set and valid, so a release can never ship without real licensing.
 // ---------------------------------------------------------------------------------------------
-val localProps = java.util.Properties().apply {
+val localProps = Properties().apply {
     val f = rootProject.file("local.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
@@ -39,12 +44,12 @@ licenseSettings.forEach { (name, value) ->
 }
 
 fun isEd25519PublicKey(b64: String): Boolean = try {
-    java.util.Base64.getMimeDecoder().decode(b64.replace('-', '+').replace('_', '/')).size == 32
+    Base64.getMimeDecoder().decode(b64.replace('-', '+').replace('_', '/')).size == 32
 } catch (e: IllegalArgumentException) { false }
 
 // A production server can never be a loopback / private-network / placeholder host.
 fun isNonProductionHost(url: String): Boolean {
-    val host = try { java.net.URI(url).host?.lowercase() } catch (e: Exception) { null } ?: return true
+    val host = try { URI(url).host?.lowercase() } catch (e: Exception) { null } ?: return true
     return !host.contains('.') || host.startsWith("[") ||
         host == "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal") ||
         host.endsWith(".invalid") || host.endsWith(".test") || host.endsWith(".example") ||
@@ -58,7 +63,7 @@ fun isNonProductionHost(url: String): Boolean {
 //   NOVA_RELEASE_STORE_FILE  NOVA_RELEASE_STORE_PASSWORD  NOVA_RELEASE_KEY_ALIAS  NOVA_RELEASE_KEY_PASSWORD
 // If none is provided the release APK is produced UNSIGNED (it cannot be installed until signed).
 // ---------------------------------------------------------------------------------------------
-val signingProps = java.util.Properties().apply {
+val signingProps = Properties().apply {
     val f = rootProject.file("keystore.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
@@ -86,7 +91,7 @@ gradle.taskGraph.whenReady {
         if (releaseSigningConfigured) {
             val ks = rootProject.file(releaseStoreFile).canonicalFile
             if (!ks.isFile) problems += "NOVA_RELEASE_STORE_FILE does not exist"
-            if (ks.path.startsWith(rootProject.projectDir.canonicalPath + java.io.File.separator))
+            if (ks.path.startsWith(rootProject.projectDir.canonicalPath + File.separator))
                 problems += "the signing keystore must live OUTSIDE the project/Git working tree"
         }
         if (!isEd25519PublicKey(licensePublicKey)) problems += "LICENSE_PUBLIC_KEY must be a base64 32-byte Ed25519 public key"
