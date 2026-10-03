@@ -70,10 +70,7 @@ jobs:
           LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
           ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
         run: |
-          for f in app/build/test-results/testDebugUnitTest/*.xml; do
-            echo "::error::RESULT $(grep -o '<testsuite name="[^"]*" tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' "$f")"
-          done
-          ls -la app/build/outputs/apk/debug/ 2>&1 | while IFS= read -r l; do echo "::error::APK $l"; done
+          echo "::error::SUMMARY $(for f in app/build/test-results/testDebugUnitTest/*.xml; do grep -o '<testsuite name="[^"]*" tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*"' "$f" | sed 's/<testsuite name="com.nova.gpspro.//;s/" tests="/ t=/;s/" skipped="/ s=/;s/" failures="/ f=/'; done | tr '\n' ';')"
 
       - name: Upload unit test reports (on failure)
         if: failure()
