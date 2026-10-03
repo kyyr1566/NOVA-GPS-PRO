@@ -61,6 +61,17 @@ jobs:
           ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
         run: ./gradlew --no-daemon --stacktrace assembleDebug
 
+      - name: DIAG surface gradle errors
+        if: failure()
+        env:
+          LICENSE_SERVER_BASE_URL: ${{ vars.LICENSE_SERVER_BASE_URL }}
+          LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
+          ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
+        run: |
+          ./gradlew --no-daemon --console=plain testDebugUnitTest > /tmp/gradle.log 2>&1 || true
+          grep -nE "^e: |error:|What went wrong|FAILED|Caused by|Unresolved|Exception|wrong|> " /tmp/gradle.log | head -25 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
+          echo "::error::TAIL: $(tail -n 12 /tmp/gradle.log | tr '\n' '|' | cut -c1-900)"
+
       - name: Upload unit test reports (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
