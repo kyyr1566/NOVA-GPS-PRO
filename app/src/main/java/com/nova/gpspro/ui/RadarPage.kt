@@ -93,11 +93,10 @@ class RadarPage(act: MainActivity) : Page(act) {
         controls.addView(rangeButton, lp(0, weight = 1f).margins(s = c.dp(10)))
         addView(controls, lp())
 
-        // Three square graphs replace the old fix/satellite/accuracy text chips. The row
-        // keeps the exact measured height of those former chips, preserving the radar circle's
-        // size and centre while giving the charts only real GNSS/GPS samples.
+        // Three graph cards use the same full-width columns and row height as the former
+        // telemetry chips, preserving the radar's exact available area and centre.
         val graphTileSize = previousTelemetryRowHeight()
-        val graphHud = c.hbox().apply { gravity = Gravity.CENTER }
+        val graphHud = c.hbox().apply { setPadding(0, 0, 0, 0) }
         cn0Graph = RadarMetricCard(
             c,
             c.getString(R.string.radar_graph_cn0_title),
@@ -118,9 +117,9 @@ class RadarPage(act: MainActivity) : Page(act) {
             { value -> act.units.accuracy(value.toFloat()) },
             C.RADAR_CHIP_TEXT
         )
-        graphHud.addView(cn0Graph, LinearLayout.LayoutParams(graphTileSize, graphTileSize).margins(e = c.dp(4)))
-        graphHud.addView(satellitesGraph, LinearLayout.LayoutParams(graphTileSize, graphTileSize).margins(s = c.dp(4), e = c.dp(4)))
-        graphHud.addView(accuracyGraph, LinearLayout.LayoutParams(graphTileSize, graphTileSize).margins(s = c.dp(4)))
+        graphHud.addView(cn0Graph, lp(0, graphTileSize, weight = 1f))
+        graphHud.addView(satellitesGraph, lp(0, graphTileSize, weight = 1f).margins(s = c.dp(8), e = c.dp(8)))
+        graphHud.addView(accuracyGraph, lp(0, graphTileSize, weight = 1f))
         addView(graphHud, lp(h = graphTileSize).margins(b = c.dp(4)))
 
         radar.apply {

@@ -170,9 +170,13 @@ class RadarView(ctx: Context) : View(ctx) {
 
     /** Fine concentric rings, hairline radial guides and unlabelled bezel graduations. */
     private fun drawGrid(canvas: Canvas, cx: Float, cy: Float, r: Float) {
-        strokePaint.strokeWidth = dpf(.75f)
-        for ((index, fraction) in floatArrayOf(.22f, .44f, .66f, .88f).withIndex()) {
-            val alpha = if (index == 3) 82 else 47
+        strokePaint.strokeWidth = dpf(.7f)
+        for ((index, fraction) in floatArrayOf(.14f, .26f, .38f, .50f, .62f, .74f, .86f, .96f).withIndex()) {
+            val alpha = when {
+                index == 7 -> 100
+                index % 2 == 1 -> 57
+                else -> 32
+            }
             strokePaint.color = Color.argb(alpha, 79, 223, 236)
             canvas.drawCircle(cx, cy, r * fraction, strokePaint)
         }

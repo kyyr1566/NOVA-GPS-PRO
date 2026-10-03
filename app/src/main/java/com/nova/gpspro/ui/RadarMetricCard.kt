@@ -10,7 +10,7 @@ import android.widget.TextView
 import com.nova.gpspro.R
 import java.util.Locale
 
-/** Small square card containing a real, rolling radar metric graph. */
+/** Radar metric card sized and placed like the original three-column telemetry chips. */
 class RadarMetricCard(
     context: Context,
     title: String,
@@ -27,12 +27,12 @@ class RadarMetricCard(
     init {
         orientation = VERTICAL
         gravity = Gravity.CENTER
-        background = roundRect(C.RADAR_SOFT_BG, context.dp(9).toFloat(), C.RADAR_BORDER, context.dp(1))
-        setPadding(context.dp(2), context.dp(2), context.dp(2), context.dp(2))
+        background = roundRect(C.CARD, context.dp(13).toFloat(), C.BORDER, context.dp(1))
+        setPadding(context.dp(4), context.dp(2), context.dp(4), context.dp(2))
         isFocusable = true
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
 
-        val titleView = context.text(title, 7f, C.RADAR_TEXT2, Fonts.medium).apply {
+        val titleView = context.text(title, 9f, C.RADAR_TEXT2, Fonts.medium).apply {
             gravity = Gravity.CENTER
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
@@ -42,9 +42,9 @@ class RadarMetricCard(
 
         addView(chart, LinearLayout.LayoutParams(
             android.view.ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
-        ).margins(t = context.dp(1), b = context.dp(1)))
+        ))
 
-        valueView = context.text(context.getString(R.string.radar_graph_unavailable), 7.5f, C.RADAR_CHIP_TEXT, Fonts.medium).apply {
+        valueView = context.text(context.getString(R.string.radar_graph_unavailable), 9.5f, C.RADAR_CHIP_TEXT, Fonts.medium).apply {
             gravity = Gravity.CENTER
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
