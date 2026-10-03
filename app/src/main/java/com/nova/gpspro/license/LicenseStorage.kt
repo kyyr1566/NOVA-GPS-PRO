@@ -26,16 +26,18 @@ interface LicenseStorage {
 class KeystoreLicenseStorage(context: Context) : LicenseStorage {
     private val prefs = context.getSharedPreferences("nova_license", Context.MODE_PRIVATE)
 
-    override fun load(): String? = try {
-        val raw = prefs.getString(KEY_BLOB, null) ?: return null
-        val blob = Base64.getDecoder().decode(raw)
-        if (blob.size <= IV_SIZE) return null
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, secretKey(create = false) ?: return null, GCMParameterSpec(128, blob, 0, IV_SIZE))
-        cipher.updateAAD(AAD)
-        String(cipher.doFinal(blob, IV_SIZE, blob.size - IV_SIZE), Charsets.UTF_8)
-    } catch (_: Exception) {
-        null      // unreadable / tampered / key lost → behaves exactly like "not activated"
+    override fun load(): String? {
+        return try {
+            val raw = prefs.getString(KEY_BLOB, null) ?: return null
+            val blob = Base64.getDecoder().decode(raw)
+            if (blob.size <= IV_SIZE) return null
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, secretKey(create = false) ?: return null, GCMParameterSpec(128, blob, 0, IV_SIZE))
+            cipher.updateAAD(AAD)
+            String(cipher.doFinal(blob, IV_SIZE, blob.size - IV_SIZE), Charsets.UTF_8)
+        } catch (_: Exception) {
+            null      // unreadable / tampered / key lost → behaves exactly like "not activated"
+        }
     }
 
     override fun save(token: String): Boolean = try {
