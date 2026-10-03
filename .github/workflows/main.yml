@@ -68,8 +68,9 @@ jobs:
           LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
           ACTIVATION_PUBLIC_KEY: ${{ vars.ACTIVATION_PUBLIC_KEY }}
         run: |
-          ./gradlew --no-daemon --console=plain testDebugUnitTest > /tmp/gradle.log 2>&1 || true
-          grep -nE "^e: |^w: .*license|error:|What went wrong|FAILED|Caused by|Unresolved|Exception" /tmp/gradle.log | head -25 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
+          ./gradlew --no-daemon --console=plain testDebugUnitTest --rerun-tasks -i > /tmp/gradle.log 2>&1 || true
+          grep -A3 -E " FAILED$" /tmp/gradle.log | grep -v "^--$" | head -40 | while IFS= read -r l; do echo "::error::${l:0:400}"; done
+          grep -c "PASSED" /tmp/gradle.log || true
           echo "::error::TAIL: $(tail -n 12 /tmp/gradle.log | tr '\n' '|' | cut -c1-900)"
 
       - name: Upload unit test reports (on failure)
