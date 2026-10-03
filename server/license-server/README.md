@@ -25,7 +25,8 @@ node cli.js keygen --out-dir /etc/nova-license     # creates the ACTIVATION key 
 cp .env.example .env                                # fill LICENSE_PUBLIC_KEY, ACTIVATION_PRIVATE_KEY_FILE, DATABASE_PATH
 set -a; . ./.env; set +a; node server.js
 ```
-* Put it behind a TLS reverse proxy (nginx / Caddy) – the app refuses non-HTTPS URLs. Set `TRUST_PROXY=1` behind it.
+* Put it behind a TLS reverse proxy (nginx / Caddy) – the app refuses non-HTTPS URLs. Set `TRUST_PROXY=1` behind it; the proxy must *append* the real client address to `X-Forwarded-For` (nginx `proxy_add_x_forwarded_for`) – the server trusts only the last entry for rate limiting.
+* The activation private key file must live **outside any Git repository**: the server refuses to start if it finds it inside one.
 * Back up the SQLite file (it is the record of which device owns which license) and the activation private key (offline).
 * Losing the activation private key means every already-activated device keeps working only until it reinstalls; rotate by shipping a new app with a new `ACTIVATION_PUBLIC_KEY`.
 

@@ -205,3 +205,14 @@ test('startup refuses to run without keys; CLI imports and revokes', () => {
   assert.strictEqual(kg.status, 0, kg.stderr);
   assert.ok(!/PRIVATE KEY/.test(kg.stdout));
 });
+
+test('behind a trusted proxy the rate limit keys on the proxy-appended (last) X-Forwarded-For entry, not a spoofable one', async (t) => {
+  const s = await setup({ rateLimitPerMinute: 3, trustProxy: true }); t.after(s.close);
+  const base = `http://127.0.0.1:${s.server.address().port}/v1/activate`;
+  const hit = async (xff) => (await fetch(base, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': xff }, body: '{}' })).status;
+  const codes = [];
+  // the attacker rotates a forged first entry; the proxy appends the real peer (203.0.113.9) last
+  for (let i = 0; i < 6; i++) codes.push(await hit(`10.0.0.${i}, 203.0.113.9`));
+  assert.deepStrictEqual(codes, [400, 400, 400, 429, 429, 429]);
+  assert.strictEqual(await hit('198.51.100.7'), 400, 'a different real client is unaffected');
+});

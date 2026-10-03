@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+# Read-only token: the build only needs to read the repository.
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest

@@ -24,3 +24,7 @@ server/license-server/data/
 *.keystore
 keystore.properties
 signing.properties
+*.sqlite
+*.sqlite3
+*.license.txt
+*.record.json

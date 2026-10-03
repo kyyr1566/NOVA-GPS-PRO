@@ -9,7 +9,7 @@ node generate.js keygen --out-dir ~/secure/nova      # refuses to write inside a
 ```
 * Prints the **public** key → `LICENSE_PUBLIC_KEY` in the Android build *and* in the activation server.
 * The **private** key (`nova-license-private.pem`) never goes to GitHub, the app or the server. There is intentionally **no key in this repository**.
-* The generator reads the key from `--key-file`, `LICENSE_PRIVATE_KEY_FILE` or `LICENSE_PRIVATE_KEY_PEM` only.
+* The generator reads the key from `--key-file`, `LICENSE_PRIVATE_KEY_FILE` or `LICENSE_PRIVATE_KEY_PEM` only. A key **file** located inside any Git repository / working tree is refused (error, not a warning).
 
 ## Issue licenses
 ```bash

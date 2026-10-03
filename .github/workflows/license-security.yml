@@ -1,0 +1,35 @@
+name: License security checks
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+# Read-only token: these jobs never need to write to the repository.
+permissions:
+  contents: read
+
+jobs:
+  secret-guard:
+    name: No secrets / keys / keystores in Git
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash tools/check-no-secrets.sh
+
+  node-tests:
+    name: License server & generator tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: License server
+        working-directory: server/license-server
+        run: npm test
+      - name: License generator
+        working-directory: tools/license-generator
+        run: |
+          npm ci
+          npm test

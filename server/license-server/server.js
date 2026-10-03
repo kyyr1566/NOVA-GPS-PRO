@@ -39,7 +39,9 @@ function createServer({ store, licensePublicKey, activationPrivateKey, trustProx
     if (url !== '/v1/activate') return send(res, 404, { status: 'NOT_FOUND' });
     if (req.method !== 'POST') return send(res, 405, { status: 'METHOD_NOT_ALLOWED' });
 
-    const ip = (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',')[0].trim()) || req.socket.remoteAddress || '?';
+    // Behind a trusted reverse proxy the client address is the LAST X-Forwarded-For entry (the one the proxy appended);
+    // earlier entries are client-supplied and must not be trusted, or the rate limit could be dodged by spoofing them.
+    const ip = (trustProxy && String(req.headers['x-forwarded-for'] || '').split(',').pop().trim()) || req.socket.remoteAddress || '?';
     if (limited(ip)) return send(res, 429, { status: 'RATE_LIMITED' });
     if (!/^application\/json/i.test(req.headers['content-type'] || '')) return send(res, 415, { status: 'INVALID_REQUEST' });
 
