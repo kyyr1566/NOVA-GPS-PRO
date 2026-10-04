@@ -191,4 +191,21 @@
     <string name="portal_qr_result">Scanned location</string>
     <string name="portal_saved_fmt">%1$d saved to Destinations</string>
     <string name="portal_done">Done</string>
+
+    <string name="activation_eyebrow">ONE-TIME ACTIVATION</string>
+    <string name="activation_title">Activate NOVA GPS PRO</string>
+    <string name="activation_subtitle">Enter your license code to unlock the complete GPS experience.</string>
+    <string name="activation_code_label">LICENSE CODE</string>
+    <string name="activation_code_hint">Enter your license code</string>
+    <string name="activation_button">Activate license</string>
+    <string name="activation_button_busy">Activating…</string>
+    <string name="activation_scan_camera">Scan QR</string>
+    <string name="activation_pick_qr">Gallery QR</string>
+    <string name="activation_offline_note">Activation is required once while online. GPS, navigation and all app features work offline afterwards.</string>
+    <string name="activation_error_enter_code">Enter a license code or scan its QR code.</string>
+    <string name="activation_error_invalid">This license code is not valid. Check it and try again.</string>
+    <string name="activation_error_used">This license has already been activated on another device.</string>
+    <string name="activation_error_network">Could not connect. Check your internet connection and try again.</string>
+    <string name="activation_error_server">A temporary server problem occurred. Please try again shortly.</string>
+    <string name="activation_success">License activated. Welcome to NOVA GPS PRO.</string>
 </resources>
