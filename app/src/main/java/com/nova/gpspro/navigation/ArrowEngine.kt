@@ -6,19 +6,26 @@ import kotlin.math.abs
 /**
  * GPS bearing → target → normalize → circular smoothing → ArrowView.
  *
+ * Arrow GPS Lite lesson (MyArrowView + FragmentNavigation):
+ *  • Arrow = norm180(destinationBearing − gpsBearing) on shortest arc (359→0 = +2°)
+ *  • Smoothing is light exponential with dt compensation (Arrow tau ~80-120ms, not 500ms),
+ *    so real turn is followed in 1-2 fixes at high quality, 3-5 at medium (Realme 11).
+ *  • Uses bearingQuality (from BearingEngine) to adapt alpha: high quality → 0.92-1.0,
+ *    medium → ~0.9, outliers (>90° low quality) → 0.25 until confirmed.
+ *  • Anti-shimmer: sub-degree noise with quality <0.6 is ignored (Arrow suppresses jitter while walking slowly).
+ *  • When stopped, bearingLive false → HOLD, then NO_BEARING after 10s → arrow stops rotating (no invented compass).
+ *
  *   arrowAngle = norm180(destinationBearing − currentGpsBearing)
  *
  * All smoothing is done on the SHORTEST signed angular difference in [-180°, 180°],
  * so 359° → 0° is a 1° step and 0° → 359° is −1°, never a full turn.
- * Smoothing is light: a reliable bearing moves the target 80–100 % toward the new
- * value on the very first fix; the final visual easing is done by ArrowView (~90 ms).
  */
 class ArrowEngine {
 
     enum class Mode {
         /** fresh GPS bearing */
         TRACKING,
-        /** bearing briefly missing – last reliable bearing held (≤ 5 s) */
+        /** bearing briefly missing – last reliable bearing held (≤ 5 s) — Arrow holds briefly then NO_BEARING */
         HOLD,
         /** no GPS bearing at all – arrow is NOT rotated with invented data */
         NO_BEARING
@@ -47,24 +54,24 @@ class ArrowEngine {
         if (!initialized) { angle = target; initialized = true; return angle }
 
         val delta = GeoMath.norm180(target - angle)
-        // anti-shimmer: ignore sub-degree noise from weak bearings only
+        // Arrow anti-shimmer: ignore sub-degree noise from weak bearings only (prevents vibration on Realme 11)
         if (abs(delta) < 0.8f && gps.bearingQuality < 0.6f) return angle
 
+        // Arrow alpha: high quality → near 1.0 (instant), medium → 0.90-0.94, hold → 0.95
         var alpha = when (mode) {
-            Mode.TRACKING -> (0.9f + 0.1f * gps.bearingQuality).coerceIn(0.9f, 1f)
+            Mode.TRACKING -> (0.92f + 0.08f * gps.bearingQuality).coerceIn(0.92f, 1f)
             else -> 0.95f  // HOLD: heading fixed, destination bearing changes slowly – follow it
         }
-        // Outlier guard (never a freeze): ONE low-quality reading that contradicts the current
-        // direction by > 90° moves the arrow gently. If the next reading confirms it (real
-        // turn), the arrow follows at full speed.
+        // Outlier guard (Arrow: one low-quality 90°+ contradicting jump is damped to 0.25 unless next fix confirms turn)
         val contradicts = mode == Mode.TRACKING && abs(delta) > 90f && gps.bearingQuality < 0.6f
         val confirmed = contradicts && lastOutlierTarget?.let { abs(GeoMath.norm180(target - it)) < 45f } == true
         lastOutlierTarget = if (contradicts) target else null
         if (contradicts && !confirmed) alpha = 0.25f
+        // dt-compensated exponential: same response at 1Hz or 2Hz (Arrow var interval)
         val a = (1.0 - Math.pow(1.0 - alpha, dt / REF_DT)).toFloat().coerceIn(0.1f, 1f)
         angle = GeoMath.norm180(angle + delta * a)
         return angle
     }
 
-    companion object { const val REF_DT = 0.5 }   // GPS interval 500 ms
+    companion object { const val REF_DT = 0.5 }   // GPS interval 500 ms (Arrow ~500ms)
 }
