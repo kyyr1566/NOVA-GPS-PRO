@@ -62,7 +62,7 @@ class ActivationView(
         val contentFrame = FrameLayout(context).apply {
             addView(column, LayoutParams(columnWidth, LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
         }
-        scroll.addView(contentFrame, ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        scroll.addView(contentFrame, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         addView(scroll, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
         val mark = TextView(context).apply {
