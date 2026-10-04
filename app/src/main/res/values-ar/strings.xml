@@ -199,4 +199,21 @@
     <string name="portal_qr_result">الموقع الممسوح</string>
     <string name="portal_saved_fmt">تم حفظ %1$d في الوجهات</string>
     <string name="portal_done">تم</string>
+
+    <string name="activation_eyebrow">تفعيل لمرة واحدة</string>
+    <string name="activation_title">تفعيل NOVA GPS PRO</string>
+    <string name="activation_subtitle">أدخل رمز الترخيص لفتح جميع مزايا نظام GPS.</string>
+    <string name="activation_code_label">رمز الترخيص</string>
+    <string name="activation_code_hint">أدخل رمز الترخيص</string>
+    <string name="activation_button">تفعيل الترخيص</string>
+    <string name="activation_button_busy">جارٍ التفعيل…</string>
+    <string name="activation_scan_camera">مسح QR</string>
+    <string name="activation_pick_qr">QR من الاستديو</string>
+    <string name="activation_offline_note">يلزم الاتصال بالإنترنت للتفعيل مرة واحدة فقط. بعد ذلك تعمل GPS والملاحة وجميع مزايا التطبيق دون إنترنت.</string>
+    <string name="activation_error_enter_code">أدخل رمز الترخيص أو امسح رمز QR الخاص به.</string>
+    <string name="activation_error_invalid">رمز الترخيص غير صحيح. تحقّق منه ثم حاول مجددًا.</string>
+    <string name="activation_error_used">تم تفعيل هذا الترخيص مسبقًا على جهاز آخر.</string>
+    <string name="activation_error_network">تعذّر الاتصال. تحقّق من اتصال الإنترنت ثم حاول مجددًا.</string>
+    <string name="activation_error_server">حدثت مشكلة مؤقتة في الخادم. حاول مجددًا بعد قليل.</string>
+    <string name="activation_success">تم تفعيل الترخيص. أهلًا بك في NOVA GPS PRO.</string>
 </resources>

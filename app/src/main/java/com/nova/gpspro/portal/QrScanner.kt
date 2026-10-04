@@ -91,7 +91,7 @@ class QrScanner(private val act: MainActivity, private val onText: (String) -> U
             cam.setPreviewCallbackWithBuffer { data, c -> onFrame(data, c) }
             cam.startPreview()
         } catch (_: Exception) {
-            release(); dialog.dismiss(); act.message.error(act.getString(R.string.portal_camera_error))
+            release(); dialog.dismiss(); act.showQrError(R.string.portal_camera_error)
         }
     }
 

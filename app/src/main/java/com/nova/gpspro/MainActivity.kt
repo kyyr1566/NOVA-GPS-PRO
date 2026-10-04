@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -27,8 +28,15 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.nova.gpspro.settings.SettingsRepository
 import com.nova.gpspro.settings.Units
+import com.nova.gpspro.license.ActivationCancellation
+import com.nova.gpspro.license.ActivationView
+import com.nova.gpspro.license.LicenseActivationResult
+import com.nova.gpspro.portal.QrCodec
+import com.nova.gpspro.portal.QrScanner
 import com.nova.gpspro.ui.*
 import java.util.Locale
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 class MainActivity : Activity() {
 
@@ -36,6 +44,12 @@ class MainActivity : Activity() {
     lateinit var units: Units; private set
     lateinit var message: CenterMessage; private set
 
+    private lateinit var activityRoot: FrameLayout
+    private var activationView: ActivationView? = null
+    private var mainUiReady = false
+    private var activationInFlight = false
+    private var activationCancellation: ActivationCancellation? = null
+    private var activationExecutor: ExecutorService? = null
     private lateinit var pages: List<Page>
     private val navItems = mutableListOf<Pair<ImageView, TextView>>()
     private var current = 0
@@ -64,42 +78,207 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         app = application as NovaApp
         units = Units(this, app.settings)
-        current = savedInstanceState?.getInt("page") ?: 0
+        current = (savedInstanceState?.getInt("page") ?: 0).coerceIn(0, 5)
 
-        val root = FrameLayout(this).apply {
+        activityRoot = FrameLayout(this).apply {
             setBackgroundColor(C.BG)
             layoutDirection = if (isRtl()) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
         }
-        val column = vbox()
-        val content = FrameLayout(this)
-        pages = listOf(HomePage(this), DestinationsPage(this), NavigationPage(this), com.nova.gpspro.portal.PortalPage(this), RadarPage(this), SettingsPage(this))
-        pages.forEach { content.addView(it.view, FrameLayout.LayoutParams(-1, -1)); it.view.visibility = View.GONE }
-        column.addView(content, lp(h = 0, weight = 1f))
-        column.addView(buildBottomBar(), lp())
-        root.addView(column, FrameLayout.LayoutParams(-1, -1))
-        message = CenterMessage(root)
-
-        root.setOnApplyWindowInsetsListener { v, insets ->
+        activityRoot.setOnApplyWindowInsetsListener { v, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
             val ime = insets.getInsets(WindowInsets.Type.ime())
             v.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom))
             WindowInsets.CONSUMED
         }
-        setContentView(root)
-        applySystemBars()
+        setContentView(activityRoot)
 
-        // Launch splash: on every real launch (fresh Activity), never on internal page
-        // switches or on recreate() after a language change (savedInstanceState != null).
-        if (savedInstanceState == null) {
-            splashShowing = true
+        // No application page, GPS service, or launch splash is created before activation.
+        if (app.licenseManager.cachedLicense() == null) {
+            current = 0
+            showActivationScreen()
+        } else {
+            setMainSystemBars()
+            createMainUi(showSplash = savedInstanceState == null)
+        }
+    }
+
+    private fun showActivationScreen() {
+        mainUiReady = false
+        setActivationSystemBars()
+        val screen = ActivationView(
+            this,
+            onActivate = ::beginActivation,
+            onScanCamera = ::scanLicenseQrWithCamera,
+            onPickQr = ::pickLicenseQrFromGallery
+        )
+        activationView = screen
+        activityRoot.addView(screen, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    private fun createMainUi(showSplash: Boolean) {
+        activityRoot.removeAllViews()
+        activationView = null
+        setMainSystemBars()
+
+        val column = vbox()
+        val content = FrameLayout(this)
+        pages = listOf(
+            HomePage(this), DestinationsPage(this), NavigationPage(this),
+            com.nova.gpspro.portal.PortalPage(this), RadarPage(this), SettingsPage(this)
+        )
+        pages.forEach { content.addView(it.view, FrameLayout.LayoutParams(-1, -1)); it.view.visibility = View.GONE }
+        column.addView(content, lp(h = 0, weight = 1f))
+        column.addView(buildBottomBar(), lp())
+        activityRoot.addView(column, FrameLayout.LayoutParams(-1, -1))
+        message = CenterMessage(activityRoot)
+        mainUiReady = true
+
+        // Keep the existing launch splash for licensed launches and after a successful activation.
+        splashShowing = showSplash
+        if (showSplash) {
             val splash = SplashView(this, app.gps) {
                 splashShowing = false
                 if (isStartedFlag) maybeAskPermission()
             }
-            root.addView(splash, FrameLayout.LayoutParams(-1, -1))
+            activityRoot.addView(splash, FrameLayout.LayoutParams(-1, -1))
             splash.start()
         }
+
+        // If activation finished while this Activity was already started, start GPS before
+        // exposing the selected page. Otherwise onStart() performs this in the usual order.
+        if (isStartedFlag) startMainGpsRuntime()
         selectTab(current)
+        if (isStartedFlag) maybeAskPermission()
+    }
+
+    private fun beginActivation(code: String) {
+        if (activationInFlight) return
+        val screen = activationView ?: return
+        activationInFlight = true
+        screen.setBusy(true)
+        val cancellation = ActivationCancellation().also { activationCancellation = it }
+
+        val executor = activationExecutor ?: Executors.newSingleThreadExecutor().also { activationExecutor = it }
+        try {
+            executor.execute {
+                val result = app.licenseManager.activate(code, cancellation)
+                runOnUiThread {
+                    if (isFinishing || isDestroyed || cancellation.isCancelled() ||
+                        activationCancellation !== cancellation || activationView !== screen) return@runOnUiThread
+                    activationInFlight = false
+                    activationCancellation = null
+                    screen.setBusy(false)
+                    when (result) {
+                        is LicenseActivationResult.Success -> {
+                            screen.showSuccess(getString(R.string.activation_success))
+                            screen.postDelayed({
+                                if (!isFinishing && activationView === screen && app.licenseManager.isActivated()) {
+                                    current = 0
+                                    activationExecutor?.shutdown()
+                                    activationExecutor = null
+                                    createMainUi(showSplash = true)
+                                }
+                            }, ACTIVATION_SUCCESS_DELAY_MS)
+                        }
+                        LicenseActivationResult.InvalidCode -> screen.showError(getString(R.string.activation_error_invalid))
+                        LicenseActivationResult.UsedOnAnotherDevice -> screen.showError(getString(R.string.activation_error_used))
+                        LicenseActivationResult.NetworkError -> screen.showError(getString(R.string.activation_error_network))
+                        LicenseActivationResult.TemporaryServerError -> screen.showError(getString(R.string.activation_error_server))
+                        LicenseActivationResult.Cancelled -> Unit
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            cancellation.cancel()
+            activationCancellation = null
+            activationInFlight = false
+            screen.setBusy(false)
+            screen.showError(getString(R.string.activation_error_server))
+        }
+    }
+
+    private fun scanLicenseQrWithCamera() {
+        fun launchScanner() {
+            QrScanner(this) { text -> activationView?.setLicenseCode(text) }.show()
+        }
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            launchScanner()
+        } else {
+            requestPerm(Manifest.permission.CAMERA) { granted ->
+                if (granted) launchScanner()
+                else activationView?.showError(getString(R.string.portal_camera_denied))
+            }
+        }
+    }
+
+    private fun pickLicenseQrFromGallery() {
+        pickPhoto { uri ->
+            if (uri == null) return@pickPhoto
+            val scanned = decodeQrImage(uri)
+            if (scanned.isNullOrBlank()) activationView?.showError(getString(R.string.portal_no_qr))
+            else activationView?.setLicenseCode(scanned)
+        }
+    }
+
+    private fun decodeQrImage(uri: Uri): String? {
+        var bitmap: Bitmap? = null
+        return try {
+            val decoded = ImageDecoder.decodeBitmap(ImageDecoder.createSource(contentResolver, uri)) { decoder, info, _ ->
+                val longestSide = maxOf(info.size.width, info.size.height).coerceAtLeast(1)
+                val scale = minOf(1f, 1600f / longestSide)
+                decoder.setTargetSize(
+                    (info.size.width * scale).toInt().coerceAtLeast(1),
+                    (info.size.height * scale).toInt().coerceAtLeast(1)
+                )
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+            bitmap = decoded
+            val pixels = IntArray(decoded.width * decoded.height)
+            decoded.getPixels(pixels, 0, decoded.width, 0, 0, decoded.width, decoded.height)
+            QrCodec.decodePixels(pixels, decoded.width, decoded.height)
+        } catch (_: Exception) {
+            null
+        } catch (_: OutOfMemoryError) {
+            null
+        } finally {
+            bitmap?.recycle()
+        }
+    }
+
+    /** QR scanner callback used by both the activation screen and NOVA PORTAL. */
+    fun showQrError(messageRes: Int) {
+        val text = getString(messageRes)
+        val screen = activationView
+        if (screen != null) screen.showError(text)
+        else if (::message.isInitialized) message.error(text)
+    }
+
+    private fun setActivationSystemBars() {
+        window.statusBarColor = ACTIVATION_BACKGROUND
+        window.navigationBarColor = ACTIVATION_BACKGROUND
+        window.insetsController?.let { controller ->
+            val lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            controller.setSystemBarsAppearance(0, lightBars)
+        }
+        // Fallback for older flags (activation screen must stay dark).
+        val lightFlags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        window.decorView.systemUiVisibility = window.decorView.systemUiVisibility and lightFlags.inv()
+    }
+
+    private fun setMainSystemBars() {
+        window.statusBarColor = C.BG
+        window.navigationBarColor = C.BG
+        window.insetsController?.let { controller ->
+            val lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            controller.setSystemBarsAppearance(if (C.dark) 0 else lightBars, lightBars)
+            return
+        }
+        // Fallback
+        var flags = window.decorView.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        if (Build.VERSION.SDK_INT >= 26) flags = flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        window.decorView.systemUiVisibility = flags
     }
 
     private fun buildBottomBar(): View {
@@ -137,23 +316,27 @@ class MainActivity : Activity() {
         }
     }
 
-    fun showPage(i: Int) { if (i != current || !pageShown) selectTab(i) }
+    fun showPage(i: Int) {
+        if (mainUiReady && i in pages.indices && (i != current || !pageShown)) selectTab(i)
+    }
 
     private fun selectTab(i: Int) {
+        if (!mainUiReady || pages.isEmpty()) return
+        val target = i.coerceIn(pages.indices)
         if (pageShown) { pages[current].onHide(); pageShown = false }
         pages[current].view.visibility = View.GONE
-        current = i
-        val v = pages[i].view
+        current = target
+        val v = pages[target].view
         v.alpha = 0f; v.visibility = View.VISIBLE
         v.animate().alpha(1f).setDuration(160).start()
         navItems.forEachIndexed { k, (iv, tv) ->
-            val sel = k == i
+            val sel = k == target
             iv.imageTintList = ColorStateList.valueOf(if (sel) C.GOLD_DEEP else C.TEXT3)
             tv.setTextColor(if (sel) C.GOLD_DEEP else C.TEXT2)
             (iv.parent as View).background = ripple(
                 if (sel) roundRect(C.GOLD_PALE, dp(18).toFloat()) else android.graphics.drawable.ColorDrawable(0), dp(18).toFloat())
         }
-        if (isStartedFlag) { pages[i].onShow(); pageShown = true }
+        if (isStartedFlag) { pages[target].onShow(); pageShown = true }
     }
 
     // ------------------------------------------------------------- lifecycle
@@ -162,30 +345,52 @@ class MainActivity : Activity() {
     private var splashShowing = false
     private var startedOnce = false
 
+    private fun startMainGpsRuntime() {
+        if (!mainUiReady) return
+        if (startedOnce) app.destinations.reload()   // pick up changes made in the Files app
+        startedOnce = true
+        app.gps.start()
+    }
+
     private fun maybeAskPermission() {
-        if (!splashShowing && !app.gps.hasPermission() && !askedThisLaunch) { askedThisLaunch = true; requestLocationPermission(false) }
+        if (mainUiReady && !splashShowing && !app.gps.hasPermission() && !askedThisLaunch) {
+            askedThisLaunch = true
+            requestLocationPermission(false)
+        }
     }
 
     override fun onStart() {
         super.onStart()
         isStartedFlag = true
-        if (startedOnce) app.destinations.reload()   // pick up changes made in the Files app
-        startedOnce = true
-        app.gps.start()
+        if (!mainUiReady && app.licenseManager.isActivated()) {
+            current = 0
+            createMainUi(showSplash = true)
+            return
+        }
+        if (!mainUiReady) return
+        startMainGpsRuntime()
         if (!pageShown) { pages[current].onShow(); pageShown = true }
         maybeAskPermission()   // deferred until the splash finishes
     }
 
     override fun onResume() {
         super.onResume()
-        app.gps.refresh()   // user may return from system settings
+        if (mainUiReady) app.gps.refresh()   // user may return from system settings
     }
 
     override fun onStop() {
-        if (pageShown) { pages[current].onHide(); pageShown = false }
+        if (activationInFlight) {
+            activationCancellation?.cancel()
+            activationCancellation = null
+            activationInFlight = false
+            activationView?.setBusy(false)
+        }
+        if (mainUiReady) {
+            if (pageShown) { pages[current].onHide(); pageShown = false }
+            app.gps.stop()
+            app.navigation.flush()
+        }
         isStartedFlag = false
-        app.gps.stop()
-        app.navigation.flush()
         super.onStop()
     }
 
@@ -204,16 +409,6 @@ class MainActivity : Activity() {
     fun applyTheme() {
         C.use(app.settings.darkTheme)
         recreate()
-    }
-
-    /** Status/navigation bar follow the palette so no dark text sits on a dark bar. */
-    private fun applySystemBars() {
-        window.statusBarColor = C.BG
-        window.navigationBarColor = C.BG
-        val controller = window.insetsController ?: return
-        val lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
-            WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-        controller.setSystemBarsAppearance(if (C.dark) 0 else lightBars, lightBars)
     }
 
     // ------------------------------------------------------------- permissions
@@ -247,13 +442,20 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------- photos
+    private fun showPhotoError() {
+        val error = getString(R.string.err_photo)
+        val screen = activationView
+        if (screen != null) screen.showError(error)
+        else if (::message.isInitialized) message.error(error)
+    }
+
     fun pickPhoto(cb: (Uri?) -> Unit) {
         photoCallback = cb
         val intent = if (Build.VERSION.SDK_INT >= 33) Intent(MediaStore.ACTION_PICK_IMAGES).apply { type = "image/*" }
         else Intent(Intent.ACTION_GET_CONTENT).apply { type = "image/*"; addCategory(Intent.CATEGORY_OPENABLE) }
         try { startActivityForResult(intent, REQ_PHOTO) } catch (_: Exception) {
             try { startActivityForResult(Intent(Intent.ACTION_GET_CONTENT).apply { type = "image/*" }, REQ_PHOTO) }
-            catch (_: Exception) { photoCallback = null; message.error(getString(R.string.err_photo)) }
+            catch (_: Exception) { photoCallback = null; showPhotoError() }
         }
     }
 
@@ -301,7 +503,17 @@ class MainActivity : Activity() {
     }
     fun clearThumbCache() = thumbs.evictAll()
 
+    override fun onDestroy() {
+        activationCancellation?.cancel()
+        activationCancellation = null
+        activationExecutor?.shutdownNow()
+        activationExecutor = null
+        super.onDestroy()
+    }
+
     companion object {
+        private const val ACTIVATION_BACKGROUND = 0xFF0B1628.toInt()
+        private const val ACTIVATION_SUCCESS_DELAY_MS = 650L
         private const val REQ_LOC = 11
         private const val REQ_PHOTO = 12
         private const val REQ_FOLDER = 13
