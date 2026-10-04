@@ -113,6 +113,11 @@ class MainActivity : Activity() {
         )
         activationView = screen
         activityRoot.addView(screen, FrameLayout.LayoutParams(-1, -1))
+        // If previous license expired locally, show expired message (professional, requests new code)
+        // This keeps GPS/destination data (not deleted) but forces re-activation.
+        if (app.licenseManager.isLocallyExpired()) {
+            screen.post { screen.showError(getString(R.string.activation_error_expired)) }
+        }
     }
 
     private fun createMainUi(showSplash: Boolean) {
@@ -182,6 +187,8 @@ class MainActivity : Activity() {
                         }
                         LicenseActivationResult.InvalidCode -> screen.showError(getString(R.string.activation_error_invalid))
                         LicenseActivationResult.UsedOnAnotherDevice -> screen.showError(getString(R.string.activation_error_used))
+                        LicenseActivationResult.Blocked -> screen.showError(getString(R.string.activation_error_blocked))
+                        LicenseActivationResult.Expired -> screen.showError(getString(R.string.activation_error_expired))
                         LicenseActivationResult.NetworkError -> screen.showError(getString(R.string.activation_error_network))
                         LicenseActivationResult.TemporaryServerError -> screen.showError(getString(R.string.activation_error_server))
                         LicenseActivationResult.Cancelled -> Unit

@@ -16,13 +16,20 @@ import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.spec.ECGenParameterSpec
 import java.time.Instant
+import java.time.format.DateTimeParseException
 import java.util.Locale
 
-/** Locally cached activation data. No license code or server credential is stored here. */
+/**
+ * Locally cached activation data. No license code or server credential is stored here.
+ * New: expiresAt supports Supabase admin columns expires_at / blocked_at / block_reason
+ * and license types 1_DAY, 7_DAYS, 30_DAYS, 90_DAYS, 1_YEAR, LIFETIME.
+ * LIFETIME => expiresAt == null (never expires). Duration starts at first successful activation.
+ */
 data class StoredLicense(
     val licenseId: String,
     val licenseType: String,
-    val activatedAt: String
+    val activatedAt: String,
+    val expiresAt: String? = null
 )
 
 sealed class LicenseActivationResult {
@@ -32,6 +39,8 @@ sealed class LicenseActivationResult {
     object NetworkError : LicenseActivationResult()
     object TemporaryServerError : LicenseActivationResult()
     object Cancelled : LicenseActivationResult()
+    object Blocked : LicenseActivationResult()
+    object Expired : LicenseActivationResult()
 }
 
 /** Stops a pending activation from persisting locally when the user leaves the activation screen. */
@@ -50,21 +59,53 @@ class ActivationCancellation {
 /**
  * One-time activation client. Normal app startup reads SharedPreferences only; this class never
  * contacts Supabase unless [activate] is explicitly called from the activation screen.
+ * Offline after activation: no periodic checks. Expiry is enforced locally via stored expires_at.
  */
 class LicenseManager(context: Context) {
     private val appContext = context.applicationContext
     private val preferences = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    /** Returns a cached activation only when all required local fields are present. */
+    /** Returns a cached activation only when all required local fields are present and not expired/blocked. */
     fun cachedLicense(): StoredLicense? {
         if (preferences.getString(KEY_ACTIVATION_STATE, null) != STATE_ACTIVATED) return null
         val id = preferences.getString(KEY_LICENSE_ID, null)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val type = preferences.getString(KEY_LICENSE_TYPE, null)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         val activatedAt = preferences.getString(KEY_ACTIVATED_AT, null)?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-        return StoredLicense(id, type, activatedAt)
+        val expiresAtRaw = preferences.getString(KEY_EXPIRES_AT, null)?.trim()?.takeIf { it.isNotEmpty() }
+        // Backward compatibility: old LIFETIME licenses stored without expires_at remain valid (never expire).
+        // For time-limited types, if expires_at is present and in the past -> treat as expired (return null to show activation screen).
+        if (isExpired(expiresAtRaw)) return null
+        return StoredLicense(id, type, activatedAt, expiresAtRaw)
     }
 
     fun isActivated(): Boolean = cachedLicense() != null
+
+    /** True if locally stored license has expires_at in the past (used to show expired message on activation screen). */
+    fun isLocallyExpired(): Boolean {
+        if (preferences.getString(KEY_ACTIVATION_STATE, null) != STATE_ACTIVATED) return false
+        val expiresAt = preferences.getString(KEY_EXPIRES_AT, null)?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        return isExpired(expiresAt)
+    }
+
+    /** True if expiresAt is non-null and Instant is before now. LIFETIME (null) never expires. */
+    private fun isExpired(expiresAt: String?): Boolean {
+        if (expiresAt.isNullOrBlank()) return false
+        return try {
+            val instant = Instant.parse(expiresAt)
+            instant.isBefore(Instant.now())
+        } catch (_: DateTimeParseException) {
+            // Try alternative format: some Supabase returns without Z, try to parse as ISO
+            try {
+                // Fallback: try Instant.parse with trimmed, replace space with T
+                val normalized = expiresAt.trim().replace(" ", "T")
+                Instant.parse(normalized).isBefore(Instant.now())
+            } catch (_: Exception) {
+                false // unparseable -> don't block valid license (backward compat)
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     /** Performs the only online request used by the app: the user's explicit first activation. */
     fun activate(
@@ -78,7 +119,7 @@ class LicenseManager(context: Context) {
         var connection: HttpURLConnection? = null
         try {
             // Generate/reuse the Android Keystore key before making the request. Only its public
-            // key is used; the private key never leaves Android Keystore.
+            // key is used; the private key never leaves Android Keystore. Device ID = SHA256(pubKey).
             val deviceId = deviceIdFromKeystorePublicKey()
             val body = JSONObject()
                 .put("code", licenseCode)
@@ -131,17 +172,37 @@ class LicenseManager(context: Context) {
             val activatedAt = findString(recordObject, "activatedAt", "activated_at")
                 ?: findString(json, "activatedAt", "activated_at")
                 ?: Instant.now().toString()
-            val stored = StoredLicense(id, type, activatedAt)
+            // New columns: expires_at (null for LIFETIME), blocked_at etc. Only expires_at is stored locally.
+            val expiresAt = findString(recordObject, "expiresAt", "expires_at", "expiresAt", "expires_at")
+                ?: findString(json, "expiresAt", "expires_at")
+
+            // If server returns status BLOCKED/EXPIRED even with 200, treat as blocked/expired.
+            val statusString = findString(recordObject, "status") ?: findString(json, "status")
+            if (statusString != null) {
+                when (statusString.lowercase(Locale.US)) {
+                    "blocked" -> return LicenseActivationResult.Blocked
+                    "expired" -> return LicenseActivationResult.Expired
+                }
+            }
+
+            // Also check expiresAt already past (server may return already expired)
+            if (!expiresAt.isNullOrBlank() && isExpired(expiresAt)) {
+                return LicenseActivationResult.Expired
+            }
+
+            val stored = StoredLicense(id, type, activatedAt, expiresAt?.takeIf { it.isNotBlank() })
 
             // Commit atomically before reporting success, so a process exit after the request
-            // cannot leave the user locked out. The backend permits a same-device retry if needed.
+            // cannot leave the user locked out. The backend permits a same-device retry if needed (idempotent for BURNED same device).
             val saved = cancellation.commitIfActive {
-                preferences.edit()
+                val editor = preferences.edit()
                     .putString(KEY_LICENSE_ID, stored.licenseId)
                     .putString(KEY_LICENSE_TYPE, stored.licenseType)
                     .putString(KEY_ACTIVATED_AT, stored.activatedAt)
                     .putString(KEY_ACTIVATION_STATE, STATE_ACTIVATED)
-                    .commit()
+                if (stored.expiresAt != null) editor.putString(KEY_EXPIRES_AT, stored.expiresAt)
+                else editor.remove(KEY_EXPIRES_AT)
+                editor.commit()
             }
             if (cancellation.isCancelled()) return LicenseActivationResult.Cancelled
             return if (saved) LicenseActivationResult.Success(stored)
@@ -186,6 +247,28 @@ class LicenseManager(context: Context) {
 
     private fun classifyFailure(status: Int, body: String): LicenseActivationResult {
         val message = body.lowercase(Locale.US)
+
+        // Blocked must be checked before used_on_another_device / invalid to give precise message
+        val blocked = listOf(
+            "blocked", "license_blocked", "blocked_at", "block_reason", "license is blocked", "this license has been blocked", "has been blocked", "is blocked", "blocked license"
+        ).any(message::contains)
+        if (blocked) return LicenseActivationResult.Blocked
+
+        val expired = listOf(
+            "expired", "license_expired", "license is expired", "has expired", "expired license", "license_expired", "expires_at", "license has expired"
+        ).any(message::contains)
+        // Be careful: "expires_at" alone is not enough, but if message says expired, we return Expired
+        // Also check status field explicitly: if body contains "\"status\":\"expired\"" or similar
+        if (expired && (message.contains("expired") || message.contains("expire"))) {
+            // Guard: don't misclassify generic messages that mention expires_at without expired status
+            if (message.contains("expired") || message.contains("is expired") || message.contains("\"expired\"") || message.contains("status") && message.contains("expired")) {
+                return LicenseActivationResult.Expired
+            }
+        }
+        // More precise: if body explicitly contains status expired/blocked
+        if (message.contains("\"status\"") && message.contains("expired")) return LicenseActivationResult.Expired
+        if (message.contains("\"status\"") && message.contains("blocked")) return LicenseActivationResult.Blocked
+
         val usedOnAnotherDevice = listOf(
             "used_on_another_device", "already_used_on_another_device", "already_activated_on_another_device",
             "activated_on_another_device", "already activated on another device", "already activated on a different device",
@@ -206,6 +289,11 @@ class LicenseManager(context: Context) {
         if (invalidCode || status == HttpURLConnection.HTTP_BAD_REQUEST || status == 404 || status == 422) {
             return LicenseActivationResult.InvalidCode
         }
+
+        // If status is 403 and body mentions blocked/expired, we already handled above; otherwise generic server error
+        if (status == 403 && message.contains("block")) return LicenseActivationResult.Blocked
+        if (status == 410 && message.contains("expire")) return LicenseActivationResult.Expired
+
         return LicenseActivationResult.TemporaryServerError
     }
 
@@ -215,6 +303,8 @@ class LicenseManager(context: Context) {
             when (value) {
                 is String -> value.trim().takeIf { it.isNotEmpty() }?.let { return it }
                 is Number -> return value.toString()
+                // Supabase may return null JSON null, skip
+                JSONObject.NULL -> continue
             }
         }
         return null
@@ -225,6 +315,7 @@ class LicenseManager(context: Context) {
         const val KEY_LICENSE_ID = "license_id"
         const val KEY_LICENSE_TYPE = "license_type"
         const val KEY_ACTIVATED_AT = "activated_at"
+        const val KEY_EXPIRES_AT = "expires_at"
         const val KEY_ACTIVATION_STATE = "activation_state"
         const val STATE_ACTIVATED = "activated"
 

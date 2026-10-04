@@ -213,6 +213,8 @@
     <string name="activation_error_enter_code">أدخل رمز الترخيص أو امسح رمز QR الخاص به.</string>
     <string name="activation_error_invalid">رمز الترخيص غير صحيح. تحقّق منه ثم حاول مجددًا.</string>
     <string name="activation_error_used">تم تفعيل هذا الترخيص مسبقًا على جهاز آخر.</string>
+    <string name="activation_error_blocked">تم إيقاف هذا الترخيص. يرجى التواصل مع الدعم أو استخدام رمز ترخيص جديد.</string>
+    <string name="activation_error_expired">انتهت صلاحية هذا الترخيص. يرجى استخدام رمز ترخيص جديد.</string>
     <string name="activation_error_network">تعذّر الاتصال. تحقّق من اتصال الإنترنت ثم حاول مجددًا.</string>
     <string name="activation_error_server">حدثت مشكلة مؤقتة في الخادم. حاول مجددًا بعد قليل.</string>
     <string name="activation_success">تم تفعيل الترخيص. أهلًا بك في NOVA GPS PRO.</string>

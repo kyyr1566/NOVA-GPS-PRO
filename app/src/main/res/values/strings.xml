@@ -216,6 +216,8 @@
     <string name="activation_error_enter_code">Enter a license code or scan its QR code.</string>
     <string name="activation_error_invalid">This license code is not valid. Check it and try again.</string>
     <string name="activation_error_used">This license has already been activated on another device.</string>
+    <string name="activation_error_blocked">This license has been blocked. Please contact support or use a new license code.</string>
+    <string name="activation_error_expired">This license has expired. Please use a new license code.</string>
     <string name="activation_error_network">Could not connect. Check your internet connection and try again.</string>
     <string name="activation_error_server">A temporary server problem occurred. Please try again shortly.</string>
     <string name="activation_success">License activated. Welcome to NOVA GPS PRO.</string>
