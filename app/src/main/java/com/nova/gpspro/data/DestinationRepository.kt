@@ -107,10 +107,10 @@ class DestinationRepository(private val ctx: Context) {
         if (slot != null) handlesToDelete.add(slot.handle)
         try {
             for (e in store.list()) {
-                val decoded = try { LocxCodec.decodeAll(e.text, \"scan_\", 0L) } catch (_: Exception) { emptyList() }
+                val decoded = try { LocxCodec.decodeAll(e.text, "scan_", 0L) } catch (_: Exception) { emptyList() }
                 // For multi-location files try decodeAll; for single also decode
                 val ids = if (decoded.isNotEmpty()) decoded.map { it.id } else {
-                    val single = try { LocxCodec.decode(e.text, \"scan_\", 0L)?.id } catch (_: Exception) { null }
+                    val single = try { LocxCodec.decode(e.text, "scan_", 0L)?.id } catch (_: Exception) { null }
                     listOfNotNull(single)
                 }
                 if (id in ids) handlesToDelete.add(e.handle)
