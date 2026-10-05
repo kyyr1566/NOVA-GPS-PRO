@@ -42,19 +42,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "=== BUILD.LOG (last 300 lines) ==="
-          tail -n 300 build.log || true
+          echo "=== BUILD.LOG (last 400 lines) ==="
+          tail -n 400 build.log || true
           echo "=== posting to PR comment ==="
-          LOG=$(tail -n 250 build.log | head -c 60000)
-          # Find PR for this branch
-          BRANCH="${GITHUB_REF#refs/heads/}"
-          PR=$(gh pr list --state open --json number,headRefName --jq ".[] | select(.headRefName==\"$BRANCH\") | .number" | head -n1)
-          if [ -n "$PR" ]; then
-            gh api repos/${{ github.repository }}/issues/$PR/comments --field body="❌ Build failed on $BRANCH ($(git rev-parse --short HEAD)):
-          \`\`\`
-          $LOG
-          \`\`\`" || true
+          # hardcode PR 9 for arena branch (open PR)
+          PR=9
+          LOGFILE=$(mktemp)
+          tail -n 300 build.log > "$LOGFILE"
+          # truncate to 60000 chars for comment limit
+          head -c 60000 "$LOGFILE" > "${LOGFILE}.trunc"
+          mv "${LOGFILE}.trunc" "$LOGFILE"
+          if [ -s "$LOGFILE" ]; then
+            gh pr comment "$PR" --body-file "$LOGFILE" || \
+            gh api repos/${{ github.repository }}/issues/$PR/comments --field body="$(cat "$LOGFILE" | head -c 60000)" || true
           fi
+          # also echo to step summary for visibility
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat "$LOGFILE" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
