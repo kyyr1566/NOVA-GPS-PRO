@@ -100,9 +100,31 @@ class DestinationRepository(private val ctx: Context) {
 
     fun delete(id: String): Boolean {
         val d = get(id) ?: return false
+        // Collect every .locx handle that encodes the same id (handles dedup: duplicate files with same id)
+        // Slot holds one handle but there may be duplicates not in slots; scan store.list()
+        val handlesToDelete = mutableSetOf<String>()
         val slot = slots[id]
-        if (slot != null && !store.delete(slot.handle)) return false
-        slots.remove(id)
+        if (slot != null) handlesToDelete.add(slot.handle)
+        try {
+            for (e in store.list()) {
+                val decoded = try { LocxCodec.decodeAll(e.text, \"scan_\", 0L) } catch (_: Exception) { emptyList() }
+                // For multi-location files try decodeAll; for single also decode
+                val ids = if (decoded.isNotEmpty()) decoded.map { it.id } else {
+                    val single = try { LocxCodec.decode(e.text, \"scan_\", 0L)?.id } catch (_: Exception) { null }
+                    listOfNotNull(single)
+                }
+                if (id in ids) handlesToDelete.add(e.handle)
+            }
+        } catch (_: Exception) { }
+        if (handlesToDelete.isEmpty() && slot == null) return false
+        var anyDeleted = false
+        var failed = false
+        for (h in handlesToDelete) {
+            if (store.delete(h)) anyDeleted = true else failed = true
+        }
+        if (failed && !anyDeleted) return false
+        // Also purge any in-memory duplicates that share same id but weren't in slots
+        slots.entries.removeIf { it.key == id }
         items = items.filter { it.id != id }.toMutableList()
         d.photoPath?.let { deletePhoto(it) }
         notifyChanged(); return true

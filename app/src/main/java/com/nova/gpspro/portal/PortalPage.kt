@@ -16,6 +16,7 @@ import android.widget.ScrollView
 import com.nova.gpspro.MainActivity
 import com.nova.gpspro.R
 import com.nova.gpspro.data.Destination
+import com.nova.gpspro.data.ExternalLocationParser
 import com.nova.gpspro.data.LocxCodec
 import com.nova.gpspro.ui.*
 import java.io.File
@@ -153,8 +154,11 @@ class PortalPage(act: MainActivity) : Page(act) {
                 val text = try {
                     c.contentResolver.openInputStream(u)?.use { s -> s.readBytes().takeIf { it.size <= 4_000_000 }?.toString(Charsets.UTF_8) }
                 } catch (_: Exception) { null }
-                val recs = text?.let { LocxCodec.decodeAll(it, "imp_${found.size}_", System.currentTimeMillis()) }.orEmpty()
-                if (recs.isEmpty()) bad++ else found.addAll(recs.map { it.copy(photoPath = null) })
+                if (text == null) { bad++; continue }
+                val recsNova = try { LocxCodec.decodeAll(text, "imp_${found.size}_", System.currentTimeMillis()) } catch (_: Exception) { emptyList() }
+                if (recsNova.isNotEmpty()) { found.addAll(recsNova.map { it.copy(photoPath = null) }); continue }
+                val recsExt = try { ExternalLocationParser.parse(text, "ext_${found.size}_", System.currentTimeMillis()) } catch (_: Exception) { emptyList() }
+                if (recsExt.isNotEmpty()) found.addAll(recsExt.map { it.copy(photoPath = null) }) else bad++
             }
             if (found.isEmpty()) { c.message.error(c.getString(R.string.portal_invalid_file)); return@startForResult }
             review(found, fromQr = false)
