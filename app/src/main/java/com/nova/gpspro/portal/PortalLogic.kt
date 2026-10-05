@@ -17,9 +17,10 @@ import java.util.Locale
 
 /** Compact QR text payload (pure, JVM-testable). */
 object QrPayload {
-    const val HEADER = "NOVA-QR1"
+    const val HEADER = "NOVA GPS PRO LOCATION QR"
+    private const val HEADER_OLD = "NOVA-QR1"
 
-    /** NOVA-QR1 \n lat;lon;name;notes;savedAtMs  (one line per location) */
+    /** NOVA GPS PRO LOCATION QR \n lat;lon;name;notes;savedAtMs  (one line per location) */
     fun encode(list: List<Destination>): String = buildString {
         append(HEADER)
         for (d in list) {
@@ -29,30 +30,29 @@ object QrPayload {
         }
     }
 
-    /** Accepts NOVA-QR1, a full .locx text, or a standard geo: URI. Empty list = not a location QR. */
+    /** Only accepts NOVA GPS PRO LOCATION QR payloads (strict). Empty list = not a valid NOVA QR. */
     fun decode(text: String, now: Long, geoName: String): List<Destination> {
         val t = text.trim().removePrefix("\uFEFF")
-        if (t.startsWith(HEADER)) {
-            return t.split('\n').drop(1).mapIndexedNotNull { i, raw ->
-                val f = raw.trimEnd('\r').split(';')
-                if (f.size < 3) return@mapIndexedNotNull null
-                val lat = Destination.parseCoordinate(f[0]); val lon = Destination.parseCoordinate(f[1])
-                val name = unesc(f[2]).trim()
-                if (!Destination.validLat(lat) || !Destination.validLon(lon) || name.isEmpty()) return@mapIndexedNotNull null
-                Destination("qr_$i", name, lat!!, lon!!, null,
-                    f.getOrNull(3)?.let { unesc(it).trim() }?.ifEmpty { null },
-                    f.getOrNull(4)?.trim()?.toLongOrNull()?.takeIf { it > 0 } ?: now)
-            }
+        // Strict: only NOVA QR headers are valid — reject geo:, http, plain text, contacts, etc.
+        val isNovaQr = t.startsWith(HEADER) || t.startsWith(HEADER_OLD)
+        if (!isNovaQr) return emptyList()
+        // Determine which header was used and strip it
+        val payload = when {
+            t.startsWith(HEADER) -> t.removePrefix(HEADER).trimStart('\n', '\r')
+            t.startsWith(HEADER_OLD) -> t.removePrefix(HEADER_OLD).trimStart('\n', '\r')
+            else -> return emptyList()
         }
-        if (t.startsWith("NOVA-LOCX")) return LocxCodec.decodeAll(t, "qr_", now).map { it.copy(photoPath = null) }
-        Regex("^geo:([+-]?[0-9.]+),([+-]?[0-9.]+)(.*)$", RegexOption.IGNORE_CASE).find(t)?.let { m ->
-            val lat = Destination.parseCoordinate(m.groupValues[1]); val lon = Destination.parseCoordinate(m.groupValues[2])
-            if (!Destination.validLat(lat) || !Destination.validLon(lon)) return emptyList()
-            val label = Regex("\\(([^)]*)\\)").find(m.groupValues[3])?.groupValues?.get(1)
-                ?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) }?.trim()
-            return listOf(Destination("qr_0", label?.ifEmpty { null } ?: geoName, lat!!, lon!!, null, null, now))
+        if (payload.isEmpty()) return emptyList()
+        return payload.split('\n').mapIndexedNotNull { i, raw ->
+            val f = raw.trimEnd('\r').split(';')
+            if (f.size < 3) return@mapIndexedNotNull null
+            val lat = Destination.parseCoordinate(f[0]); val lon = Destination.parseCoordinate(f[1])
+            val name = unesc(f[2]).trim()
+            if (!Destination.validLat(lat) || !Destination.validLon(lon) || name.isEmpty()) return@mapIndexedNotNull null
+            Destination("qr_$i", name, lat!!, lon!!, null,
+                f.getOrNull(3)?.let { unesc(it).trim() }?.ifEmpty { null },
+                f.getOrNull(4)?.trim()?.toLongOrNull()?.takeIf { it > 0 } ?: now)
         }
-        return emptyList()
     }
 
     private fun esc(s: String) = s.replace("\\", "\\\\").replace(";", "\\s").replace("\n", "\\n").replace("\r", "")

@@ -15,6 +15,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import com.nova.gpspro.MainActivity
 import com.nova.gpspro.R
+import android.provider.OpenableColumns
 import com.nova.gpspro.data.Destination
 import com.nova.gpspro.data.ExternalLocationParser
 import com.nova.gpspro.data.LocxCodec
@@ -151,12 +152,28 @@ class PortalPage(act: MainActivity) : Page(act) {
             if (uris.isEmpty()) data.data?.let { uris.add(it) }
             val found = ArrayList<Destination>(); var bad = 0
             for (u in uris) {
-                val text = try {
-                    c.contentResolver.openInputStream(u)?.use { s -> s.readBytes().takeIf { it.size <= 4_000_000 }?.toString(Charsets.UTF_8) }
+                val displayName = getDisplayName(u) ?: u.lastPathSegment ?: ""
+                val ext = displayName.substringAfterLast('.', "").lowercase(Locale.US)
+                if (isRejectedExtension(ext)) { bad++; continue }
+                val bytes = try {
+                    c.contentResolver.openInputStream(u)?.use { s -> s.readBytes().takeIf { it.size <= 4_000_000 } }
                 } catch (_: Exception) { null }
-                if (text == null) { bad++; continue }
+                if (bytes == null || bytes.isEmpty()) { bad++; continue }
+                if (isRejectedByMagic(bytes)) { bad++; continue }
+                if (bytes.contains(0)) { bad++; continue } // binary
+                val text = try { bytes.toString(Charsets.UTF_8).trim() } catch (_: Exception) { null }
+                if (text.isNullOrEmpty()) { bad++; continue }
+                // For non-allowed extensions, ensure text looks like a location file before parsing
+                val allowedExts = setOf("locx","gpx","kml","json","xml","csv","txt","loc")
+                if (ext.isNotEmpty() && ext !in allowedExts && ext !in setOf("zip","apk","aab","rar","7z","7zip","exe","msi","dmg","jar","aar","gz","gzip","bz2","xz","tar","tgz","iso","img") ) {
+                    // unknown extension — require location-like structure
+                    if (!isProbablyLocationText(text)) { bad++; continue }
+                }
+                // Also reject if allowed extension but content doesn't look like location and both parsers fail — handled below
                 val recsNova = try { LocxCodec.decodeAll(text, "imp_${found.size}_", System.currentTimeMillis()) } catch (_: Exception) { emptyList() }
                 if (recsNova.isNotEmpty()) { found.addAll(recsNova.map { it.copy(photoPath = null) }); continue }
+                // Only try external parser if file is a supported location format
+                if (!isSupportedExternalFormat(text, ext)) { bad++; continue }
                 val recsExt = try { ExternalLocationParser.parse(text, "ext_${found.size}_", System.currentTimeMillis()) } catch (_: Exception) { emptyList() }
                 if (recsExt.isNotEmpty()) found.addAll(recsExt.map { it.copy(photoPath = null) }) else bad++
             }
@@ -165,10 +182,101 @@ class PortalPage(act: MainActivity) : Page(act) {
         }
     }
 
+    private fun getDisplayName(uri: Uri): String? = try {
+        c.contentResolver.query(uri, null, null, null, null)?.use { cur ->
+            val idx = cur.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && cur.moveToFirst()) cur.getString(idx) else null
+        }
+    } catch (_: Exception) { null }
+
+    private fun isRejectedExtension(ext: String): Boolean {
+        return ext.lowercase(Locale.US) in setOf("zip","apk","aab","rar","7z","7zip","exe","msi","dmg","jar","aar","gz","gzip","bz2","xz","tar","tgz","iso","img","pdf","docx","xlsx","pptx","mp3","mp4","avi","mov","wav","ogg")
+    }
+
+    private fun isRejectedByMagic(bytes: ByteArray): Boolean {
+        if (bytes.size >= 4) {
+            // ZIP: PK\x03\x04, PK\x05\x06, PK\x07\x08
+            if (bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte() && bytes[2] in 0x03..0x08) return true
+            // RAR: Rar!
+            if (bytes[0] == 0x52.toByte() && bytes[1] == 0x61.toByte() && bytes[2] == 0x72.toByte() && bytes[3] == 0x21.toByte()) return true
+            // 7Z: 37 7A BC AF 27 1C
+            if (bytes[0] == 0x37.toByte() && bytes[1] == 0x7A.toByte() && bytes[2] == 0xBC.toByte() && bytes[3] == 0xAF.toByte()) return true
+        }
+        return false
+    }
+
+    private fun isProbablyLocationText(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty()) return false
+        if (t.contains("NOVA-LOCX")) return true
+        val lower = t.lowercase(Locale.US)
+        if (t.startsWith("{") || t.startsWith("[")) {
+            return lower.contains("\"lat") || lower.contains("\"lon") || lower.contains("\"latitude") || lower.contains("\"longitude") || lower.contains("\"coordinates\"") || lower.contains("\"name\"")
+        }
+        if (t.contains("<") && t.contains(">")) {
+            return lower.contains("<gpx") || lower.contains("<kml") || lower.contains("<wpt") || lower.contains("<trkpt") || lower.contains("<placemark") || lower.contains("<coordinates") || lower.contains("<lat") || lower.contains("<lon") || lower.contains("<name>")
+        }
+        // CSV / text: check for header or delimiter with coordinates
+        val lines = t.split(Regex("\\r?\\n")).map { it.trim() }.filter { it.isNotEmpty() }
+        if (lines.isEmpty()) return false
+        val firstLower = lines.first().lowercase(Locale.US)
+        if (firstLower.contains("lat") && firstLower.contains("lon")) return true
+        // Check if any line looks like CSV with coordinates
+        for (line in lines.take(3)) {
+            if (line.length > 500) continue
+            if (line.contains("<") && line.contains(">")) continue
+            val delims = listOf(",", ";", "\t", "|")
+            if (delims.none { line.contains(it) } && !line.contains(" ")) continue
+            val parts = line.split(Regex("[,;\\t| ]")).map { it.trim() }.filter { it.isNotEmpty() }
+            if (parts.size < 2) continue
+            val nums = parts.mapNotNull { Destination.parseCoordinate(it) }
+            if (nums.size >= 2) {
+                // check if any pair is valid lat/lon
+                for (i in 0 until nums.size - 1) {
+                    val a = nums[i]; val b = nums[i+1]
+                    if ((Destination.validLat(a) && Destination.validLon(b)) || (Destination.validLat(b) && Destination.validLon(a))) return true
+                }
+            }
+        }
+        return false
+    }
+
+    private fun isSupportedExternalFormat(text: String, ext: String): Boolean {
+        val lowerExt = ext.lowercase(Locale.US)
+        val t = text.trim()
+        val lower = t.lowercase(Locale.US)
+        // NOVA locx already handled, so remaining external formats:
+        // JSON
+        if (lowerExt == "json" || t.startsWith("{") || t.startsWith("[")) {
+            return lower.contains("\"lat") || lower.contains("\"lon") || lower.contains("\"latitude") || lower.contains("\"longitude") || lower.contains("\"coordinates\"") || lower.contains("\"name\"")
+        }
+        // XML / GPX / KML
+        if (lowerExt in setOf("gpx","kml","xml") || (t.contains("<") && t.contains(">"))) {
+            return lower.contains("<gpx") || lower.contains("<kml") || lower.contains("<wpt") || lower.contains("<trkpt") || lower.contains("<placemark") || lower.contains("<coordinates") || lower.contains("<lat") || lower.contains("<lon")
+        }
+        // CSV / TXT
+        if (lowerExt in setOf("csv","txt","loc") || t.contains(",") || t.contains(";") || t.contains("\t")) {
+            // must have header or at least one parsable line
+            return isProbablyLocationText(t)
+        }
+        // Fallback: if text looks like location, allow parser to try (but strict parser will reject random numbers)
+        return isProbablyLocationText(t)
+    }
+
     // ================================================================ 3. create QR
     private fun createQr() = chooseLocations(R.string.portal_qr_create, R.string.portal_generate) { list, _ ->
+        if (list.isEmpty()) {
+            c.message.error(c.getString(R.string.portal_select_one))
+            return@chooseLocations
+        }
+        val payload = QrPayload.encode(list)
+        // Guard against empty payload (should not happen, but prevents 0-location QR)
+        if (payload.lines().size <= 1) {
+            c.message.error(c.getString(R.string.portal_select_one))
+            return@chooseLocations
+        }
         val bmp = try {
-            val m = QrCodec.encode(QrPayload.encode(list))
+            val m = QrCodec.encode(payload)
             val px = IntArray(m.width * m.height) { i -> if (m[i % m.width, i / m.width]) C.QR_INK else C.QR_BG }
             val small = Bitmap.createBitmap(px, m.width, m.height, Bitmap.Config.ARGB_8888)
             Bitmap.createScaledBitmap(small, m.width * 12, m.height * 12, false)
@@ -180,6 +288,7 @@ class PortalPage(act: MainActivity) : Page(act) {
             background = roundRect(C.QR_BG, c.dp(18).toFloat(), C.BORDER, c.dp(1))
             setPadding(c.dp(10), c.dp(10), c.dp(10), c.dp(10))
         }, LinearLayout.LayoutParams(c.dp(280), c.dp(280)))
+        // Ensure we never show 0 locations — list is guaranteed non-empty here
         val label = if (list.size == 1) list[0].name else c.getString(R.string.portal_n_locations, list.size)
         box.addView(c.text(label, 15f, C.TEXT, Fonts.medium).apply { gravity = Gravity.CENTER }, lp().margins(t = c.dp(14)))
         box.addView(c.text(c.getString(R.string.portal_qr_hint), 12.5f, C.TEXT2).apply { gravity = Gravity.CENTER }, lp().margins(t = c.dp(4)))
@@ -226,9 +335,16 @@ class PortalPage(act: MainActivity) : Page(act) {
         val plan = ImportPlanner.plan(repo.all(), incoming)
         val box = c.vbox()
         if (plan.add.isEmpty()) {
-            NovaDialog(c).title(c.getString(R.string.portal_nothing_new))
-                .message(c.getString(R.string.portal_all_duplicates_fmt, plan.duplicates))
-                .button(c.getString(R.string.portal_done), filled = true) { it.dismiss() }.show()
+            if (fromQr) {
+                // Professional centered message for QR all-duplicates case
+                val title = c.getString(R.string.portal_qr_all_duplicates_title)
+                val desc = c.getString(R.string.portal_qr_ignored_fmt, plan.duplicates)
+                c.message.success("$title\n\n$desc")
+            } else {
+                NovaDialog(c).title(c.getString(R.string.portal_nothing_new))
+                    .message(c.getString(R.string.portal_all_duplicates_fmt, plan.duplicates))
+                    .button(c.getString(R.string.portal_done), filled = true) { it.dismiss() }.show()
+            }
             return
         }
         fun info(label: Int, value: String) {
@@ -270,8 +386,42 @@ class PortalPage(act: MainActivity) : Page(act) {
                     if (repo.upsert(d.copy(id = id, photoPath = null))) { saved++; taken.add(id) }
                 }
                 dlg.dismiss()
-                if (saved == toSave.size) c.message.success(c.getString(R.string.portal_saved_fmt, saved))
-                else c.message.error(c.getString(R.string.err_save))
+                if (fromQr) {
+                    if (saved == 0) {
+                        c.message.error(c.getString(R.string.err_save))
+                    } else {
+                        val added = toSave.size
+                        val duplicates = plan.duplicates
+                        val msg = when {
+                            added == 1 && duplicates == 0 -> {
+                                val title = c.getString(R.string.portal_qr_received_title_single)
+                                val singleMsg = c.getString(R.string.portal_qr_received_single)
+                                "$title\n\n$singleMsg"
+                            }
+                            added == 1 && duplicates > 0 -> {
+                                val title = c.getString(R.string.portal_qr_received_title_single)
+                                val singleMsg = c.getString(R.string.portal_qr_received_single)
+                                val dupMsg = c.getString(R.string.portal_qr_ignored_fmt, duplicates)
+                                "$title\n\n$singleMsg\n$dupMsg"
+                            }
+                            duplicates == 0 -> {
+                                val title = c.getString(R.string.portal_qr_received_title)
+                                val addedMsg = c.getString(R.string.portal_qr_added_fmt, added)
+                                "$title\n\n$addedMsg"
+                            }
+                            else -> {
+                                val title = c.getString(R.string.portal_qr_received_title)
+                                val addedMsg = c.getString(R.string.portal_qr_added_fmt, added)
+                                val dupMsg = c.getString(R.string.portal_qr_ignored_fmt, duplicates)
+                                "$title\n\n$addedMsg\n$dupMsg"
+                            }
+                        }
+                        c.message.success(msg)
+                    }
+                } else {
+                    if (saved == toSave.size) c.message.success(c.getString(R.string.portal_saved_fmt, saved))
+                    else c.message.error(c.getString(R.string.err_save))
+                }
             }.show()
     }
 }

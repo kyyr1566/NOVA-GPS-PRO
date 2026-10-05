@@ -194,7 +194,7 @@
     <string name="portal_camera_error">Could not open the camera</string>
     <string name="portal_scan_hint">Point the camera at the QR code</string>
     <string name="portal_no_qr">No QR code found in the image</string>
-    <string name="portal_not_location_qr">This QR code does not contain a location</string>
+    <string name="portal_not_location_qr">Invalid QR code\nThis code does not contain a valid NOVA GPS PRO location.</string>
     <string name="portal_qr_location">QR location</string>
     <string name="portal_nothing_new">Nothing new</string>
     <string name="portal_all_duplicates_fmt">All %1$d locations already exist in Destinations.</string>
@@ -202,6 +202,14 @@
     <string name="portal_qr_result">Scanned location</string>
     <string name="portal_saved_fmt">%1$d saved to Destinations</string>
     <string name="portal_done">Done</string>
+    <string name="portal_qr_received_title">Locations received successfully</string>
+    <string name="portal_qr_received_title_single">Location received successfully</string>
+    <string name="portal_qr_received_single">1 location added</string>
+    <string name="portal_qr_added_fmt">%1$d locations added</string>
+    <string name="portal_qr_ignored_fmt">%1$d duplicate(s) ignored</string>
+    <string name="portal_qr_all_duplicates_title">All locations already exist</string>
+    <string name="portal_qr_invalid_title">Invalid QR code</string>
+    <string name="portal_qr_invalid_desc">This code does not contain a valid NOVA GPS PRO location.</string>
 
     <string name="activation_eyebrow">ONE-TIME ACTIVATION</string>
     <string name="activation_title">Activate NOVA GPS PRO</string>

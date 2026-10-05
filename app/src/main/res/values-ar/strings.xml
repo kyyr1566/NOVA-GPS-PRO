@@ -191,7 +191,7 @@
     <string name="portal_camera_error">تعذّر فتح الكاميرا</string>
     <string name="portal_scan_hint">وجّه الكاميرا نحو رمز QR</string>
     <string name="portal_no_qr">لم يتم العثور على رمز QR في الصورة</string>
-    <string name="portal_not_location_qr">هذا الرمز لا يحتوي على موقع</string>
+    <string name="portal_not_location_qr">رمز QR غير صالح\nهذا الرمز لا يحتوي على موقع NOVA GPS PRO صالح.</string>
     <string name="portal_qr_location">موقع QR</string>
     <string name="portal_nothing_new">لا يوجد جديد</string>
     <string name="portal_all_duplicates_fmt">جميع المواقع (%1$d) موجودة مسبقًا في الوجهات.</string>
@@ -199,6 +199,14 @@
     <string name="portal_qr_result">الموقع الممسوح</string>
     <string name="portal_saved_fmt">تم حفظ %1$d في الوجهات</string>
     <string name="portal_done">تم</string>
+    <string name="portal_qr_received_title">تم استلام المواقع بنجاح</string>
+    <string name="portal_qr_received_title_single">تم استلام الموقع بنجاح</string>
+    <string name="portal_qr_received_single">تمت إضافة موقع واحد</string>
+    <string name="portal_qr_added_fmt">تمت إضافة %1$d مواقع</string>
+    <string name="portal_qr_ignored_fmt">تم تجاهل %1$d مواقع مكررة</string>
+    <string name="portal_qr_all_duplicates_title">المواقع موجودة مسبقًا</string>
+    <string name="portal_qr_invalid_title">رمز QR غير صالح</string>
+    <string name="portal_qr_invalid_desc">هذا الرمز لا يحتوي على موقع NOVA GPS PRO صالح.</string>
 
     <string name="activation_eyebrow">تفعيل لمرة واحدة</string>
     <string name="activation_title">تفعيل NOVA GPS PRO</string>

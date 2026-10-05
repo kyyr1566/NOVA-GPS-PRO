@@ -27,11 +27,15 @@ class PortalLogicTest {
     }
 
     @Test fun geoAndGarbage() {
-        val g = QrPayload.decode("geo:33.3,44.4?q=33.3,44.4(My%20Place)", 1L, "QR")
-        assertEquals("My Place", g.single().name)
-        assertEquals("QR", QrPayload.decode("geo:10,20", 1L, "QR").single().name)
+        // Strict NOVA QR only — geo:, http, and random must be rejected
+        assertTrue(QrPayload.decode("geo:33.3,44.4?q=33.3,44.4(My%20Place)", 1L, "QR").isEmpty())
+        assertTrue(QrPayload.decode("geo:10,20", 1L, "QR").isEmpty())
         assertTrue(QrPayload.decode("https://example.com", 1L, "QR").isEmpty())
         assertTrue(QrPayload.decode("geo:99,20", 1L, "QR").isEmpty())
+        assertTrue(QrPayload.decode("plain text", 1L, "QR").isEmpty())
+        assertTrue(QrPayload.decode("NOVA GPS PRO LOCATION QR\n31.0;44.0;Test;;1", 1L, "QR").isNotEmpty())
+        // backward compat for old header
+        assertTrue(QrPayload.decode("NOVA-QR1\n31.0;44.0;Test;;1", 1L, "QR").isNotEmpty())
     }
 
     @Test fun realQrImageRoundTrip() {

@@ -14,6 +14,10 @@ object ExternalLocationParser {
     fun parse(text: String, fallbackPrefix: String = "ext_", fallbackTime: Long = System.currentTimeMillis()): List<Destination> {
         val clean = text.removePrefix("\uFEFF").trim()
         if (clean.isEmpty()) return emptyList()
+        // Reject binary / ZIP-like content before parsing
+        if (clean.contains('\u0000')) return emptyList()
+        if (clean.startsWith("PK\u0003") || clean.startsWith("PK\u0005") || clean.startsWith("PK\u0007")) return emptyList()
+        if (clean.startsWith("Rar!") || clean.startsWith("7z\u00BC\u00AF")) return emptyList()
         // Don't re-parse NOVA format
         if (clean.contains("NOVA-LOCX")) return emptyList()
         val out = mutableListOf<Destination>()
@@ -237,22 +241,10 @@ object ExternalLocationParser {
             val line = lines[idx]
             if (line.contains("<") && line.contains(">")) continue
             if (line.length > 500) continue
+            // Only accept lines that look like structured location records (via delimiter parsing)
+            // Do NOT accept arbitrary two numbers — prevents ZIP/binary false positives
             val parsed = parseLineForCoords(line, prefix, out.size, time)
             if (parsed != null) out.add(parsed)
-            else {
-                // Find any two numbers that could be lat/lon — Arabic-Indic aware via manual extraction using Destination.parseCoordinate
-                // Use regex with actual Arabic digits: ٠-٩ and ۰-۹ plus Arabic decimal separators ٫ and ، and minus −
-                val numRegex = Regex("""[+\-]?[0-9٠-٩۰-۹]+(?:[.,٫،٬][0-9٠-٩۰-۹]+)?""")
-                val nums = numRegex.findAll(line).map { it.value }.toList()
-                if (nums.size >= 2) {
-                    for (i in 0 until nums.size - 1) {
-                        val a = nums[i]; val b = nums[i + 1]
-                        var dest = makeDest(a, b, extractNameFromLine(line, a, b), prefix, out.size, time)
-                        if (dest == null) dest = makeDest(b, a, extractNameFromLine(line, a, b), prefix, out.size, time)
-                        if (dest != null) { out.add(dest); break }
-                    }
-                }
-            }
         }
     }
 
