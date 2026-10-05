@@ -10,6 +10,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
 
     steps:
       - name: Checkout repository
@@ -56,7 +60,6 @@ jobs:
             let log = '';
             try { log = fs.readFileSync('build.log', 'utf8'); } catch(e) { log = 'no build.log: ' + e.message; }
             log = log.slice(-55000);
-            // truncate to 60000 for comment limit
             const body = '❌ Build failed for `' + context.sha.substring(0,7) + '`\n```\n' + log.slice(-50000) + '\n```';
             try {
               await github.rest.issues.createComment({
@@ -68,9 +71,30 @@ jobs:
               core.info('posted comment');
             } catch(e) {
               core.warning('failed to post comment: ' + e.message);
-              // also try to put as gist via API
               core.info(log.slice(-1000));
             }
+
+      - name: Push log via contents API (fallback)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -x
+          if [ -f build.log ]; then
+            tail -n 400 build.log > /tmp/trunc.log
+            B64=$(base64 -w0 /tmp/trunc.log)
+            echo "b64 length ${#B64}"
+            curl -s -X PUT \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/contents/ci-logs/${{ github.sha }}.log \
+              -d "{\"message\":\"ci log ${{ github.sha }}\",\"content\":\"$B64\",\"branch\":\"ci-build-log\"}" | head -c 2000
+            echo "--- curl done"
+            cat /tmp/trunc.log | head -n 100
+          else
+            echo "no build.log"
+            ls -la
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
