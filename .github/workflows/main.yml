@@ -46,21 +46,24 @@ jobs:
           tail -n 400 build.log >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-      - name: Push build log to branch on failure
+      - name: Push build log via API on failure
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.name "ci-bot"
-          git config user.email "ci-bot@users.noreply.github.com"
-          # create orphan branch with build log
-          git checkout --orphan ci-build-log || git checkout -B ci-build-log
-          # keep only build.log
-          cp ../build.log ./build-failure.log 2>/dev/null || cp build.log ./build-failure.log || true
-          if [ ! -f build-failure.log ]; then echo "no build.log" > build-failure.log; fi
-          git add build-failure.log || true
-          git commit -m "build failure log for ${{ github.sha }}" || true
-          git push origin ci-build-log --force || true
+          echo "=== pushing build.log via contents API ==="
+          if [ -f build.log ]; then
+            tail -n 500 build.log > /tmp/trunc.log
+            B64=$(base64 -w0 /tmp/trunc.log)
+            gh api --method PUT repos/${{ github.repository }}/contents/ci-logs/${{ github.sha }}.log \
+              --field message="ci log for ${{ github.sha }}" \
+              --field content="$B64" \
+              --field branch="ci-build-log" || echo "contents API failed"
+            cat /tmp/trunc.log
+          else
+            echo "no build.log found"
+            ls -la
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
