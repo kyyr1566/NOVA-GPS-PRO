@@ -7,10 +7,6 @@ on:
       - main
       - "arena/**"
 
-permissions:
-  contents: read
-  issues: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -40,15 +36,6 @@ jobs:
           chmod +x gradlew
           set -o pipefail
           ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
-
-      - name: Create issue with build log on failure
-        if: failure()
-        run: |
-          tail -n 500 build.log > /tmp/tail.txt
-          cat /tmp/tail.txt
-          gh issue create --title "Build log ${{ github.sha }}" --body-file /tmp/tail.txt || echo "issue create failed"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
