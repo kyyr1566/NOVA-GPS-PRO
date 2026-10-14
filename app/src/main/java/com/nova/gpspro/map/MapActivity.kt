@@ -1559,7 +1559,10 @@ class MapActivity : ComponentActivity() {
         } catch (_: Exception) {}
         try {
             // Update arrow at (possibly snapped) position but keep original GPS for distance logic
-            val arrowLoc = Location("").apply { latitude = arrowLat; longitude = arrowLon; bearing = useBearing }
+            val arrowLoc = Location("").apply { latitude = arrowLat; longitude = arrowLon }
+            arrowLoc.bearing = useBearing
+            // also ensure bearing via setter for Kotlin val quirk
+            try { arrowLoc.setBearing(useBearing) } catch (_: Exception) {}
             updateVehiclePosition(arrowLoc, useBearing)
         } catch (_: Exception) {}
         // Camera follow: offset so arrow at bottom-center, tilt 52, zoom 17.8, smooth
