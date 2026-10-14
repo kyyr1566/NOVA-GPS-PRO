@@ -1,6 +1,7 @@
 package com.nova.gpspro.map
 
 import android.content.Context
+import android.content.SharedPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -9,9 +10,14 @@ import java.net.URL
 import kotlin.math.*
 
 /**
- * Real road routing via public OSRM/BRouter-compatible endpoint.
- * Falls back to straight line if offline or no road network downloaded.
- * No Google/Mapbox paid APIs.
+ * Real road routing via open-source online engines.
+ * Production: FOSSGIS OSRM (routing.openstreetmap.de) – free, OSM ODbL, fair-use, suitable for ~10k daily if cached & rate-limited.
+ * Fallback: OSRM demo (router.project-osrm.org) – NOT for production, only for fallback/testing.
+ * Alternative: Valhalla (valhalla1.openstreetmap.de) – community, free.
+ *
+ * No Google/Mapbox paid APIs. Easy provider switching via prefs.
+ * For 25k users / 10k daily: recommend self-hosted OSRM/Valhalla/GraphHopper or commercial FOSSGIS/Stadia/MapTiler with SLA.
+ * See docs/MAPS_SOURCES.md for costs/limits.
  */
 class RoutingRepository(private val context: Context) {
 
@@ -22,25 +28,52 @@ class RoutingRepository(private val context: Context) {
         val isRoad: Boolean
     )
 
+    enum class Provider(val key: String) {
+        FOSSGIS("fosgis"),
+        OSRM_DEMO("osrm_demo"),
+        VALHALLA("valhalla")
+    }
+
+    private val prefs: SharedPreferences = context.getSharedPreferences("nova_routing", Context.MODE_PRIVATE)
+
+    var provider: Provider
+        get() = when (prefs.getString("provider", Provider.FOSSGIS.key)) {
+            Provider.VALHALLA.key -> Provider.VALHALLA
+            Provider.OSRM_DEMO.key -> Provider.OSRM_DEMO
+            else -> Provider.FOSSGIS
+        }
+        set(v) { prefs.edit().putString("provider", v.key).apply() }
+
+    fun availableProviders(): List<Pair<String,String>> = listOf(
+        Provider.FOSSGIS.key to "FOSSGIS (routing.openstreetmap.de) – مجاني، إنتاج",
+        Provider.VALHALLA.key to "Valhalla OSM.de – مجاني، بديل",
+        Provider.OSRM_DEMO.key to "OSRM Demo (تجريبي، غير للإنتاج)"
+    )
+
     suspend fun route(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): RouteResult = withContext(Dispatchers.IO) {
-        // Check offline routing data first if offline and available – honest attempt
-        val hasOfflineRouting = try { OfflineRoutingManager.hasRoutingData(context) } catch (_: Exception) { false }
         val isOnline = isOnline()
-        // Try online OSRM if connected
-        if (isOnline) {
-            val road = tryOsrm(fromLat, fromLon, toLat, toLon)
-            if (road != null) return@withContext road
-            val road2 = tryOsrmFallback(fromLat, fromLon, toLat, toLon)
-            if (road2 != null) return@withContext road2
+        if (!isOnline) {
+            // Offline: original arrow GPS still works, but street routing requires internet per final spec.
+            val dist = haversine(fromLat, fromLon, toLat, toLon)
+            val coords = listOf(fromLat to fromLon, toLat to toLon)
+            val duration = if (dist > 0) dist / (50 * 1000 / 3600.0) else 0.0
+            return@withContext RouteResult(coords, dist, duration, isRoad = false)
         }
-        // Try offline BRouter if data present (engine stub – will be implemented with brouter-core)
-        if (hasOfflineRouting) {
-            val offline = tryOfflineBRouter(fromLat, fromLon, toLat, toLon)
-            if (offline != null) return@withContext offline
-            // If offline data exists but engine not yet integrated, do NOT silently return straight line as road
-            // Fall through to straight line with isRoad=false so caller shows honest message
+        // Try selected provider first, then fallbacks
+        val order = when (provider) {
+            Provider.FOSSGIS -> listOf(Provider.FOSSGIS, Provider.VALHALLA, Provider.OSRM_DEMO)
+            Provider.VALHALLA -> listOf(Provider.VALHALLA, Provider.FOSSGIS, Provider.OSRM_DEMO)
+            Provider.OSRM_DEMO -> listOf(Provider.OSRM_DEMO, Provider.FOSSGIS, Provider.VALHALLA)
         }
-        // Fallback: straight line (as crow flies) – MUST be isRoad=false, caller must not treat as road
+        for (p in order) {
+            val res = when (p) {
+                Provider.FOSSGIS -> tryFosgis(fromLat, fromLon, toLat, toLon)
+                Provider.OSRM_DEMO -> tryOsrmDemo(fromLat, fromLon, toLat, toLon)
+                Provider.VALHALLA -> tryValhalla(fromLat, fromLon, toLat, toLon)
+            }
+            if (res != null) return@withContext res
+        }
+        // All failed – honest straight line (not road)
         val dist = haversine(fromLat, fromLon, toLat, toLon)
         val coords = listOf(fromLat to fromLon, toLat to toLon)
         val duration = if (dist > 0) dist / (50 * 1000 / 3600.0) else 0.0
@@ -56,23 +89,17 @@ class RoutingRepository(private val context: Context) {
         } catch (_: Exception) { true }
     }
 
-    private fun tryOfflineBRouter(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): RouteResult? {
-        // Stub for BRouter offline engine – requires brouter-core integration + local rd5 segments
-        // Current status: segments download works, engine integration pending airplane-mode test
-        // Returning null ensures caller treats straight line as NOT road and shows honest offline message
-        // TODO: integrate brouter-codec: BRouter().doRouting(start, end, segmentsDir) → parse GeoJSON
-        return null
-    }
-
     /**
-     * Road snapping via OSRM nearest (Map Matching lite). Returns nearest drivable road point
-     * within 75m. Uses driving profile so footways/service not returned. Keeps original GPS unchanged.
-     * Returns null if not reachable or distance >75m or offline without data.
+     * Map-matching / nearest road – keep real GPS, snap start to nearest drivable road within 75m.
      */
     suspend fun snapToRoad(lat: Double, lon: Double): Pair<Double, Double>? = withContext(Dispatchers.IO) {
         if (!isOnline()) return@withContext null
+        // Use FOSSGIS nearest if provider is FOSSGIS, else OSRM demo nearest for snapping (all use driving profile)
+        val urlStr = when (provider) {
+            Provider.FOSSGIS -> "https://routing.openstreetmap.de/routed-car/nearest/v1/driving/${lon},${lat}?number=1"
+            else -> "https://router.project-osrm.org/nearest/v1/driving/${lon},${lat}?number=1"
+        }
         try {
-            val urlStr = "https://router.project-osrm.org/nearest/v1/driving/${lon},${lat}?number=1"
             val conn = URL(urlStr).openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
             conn.connectTimeout = 6000
@@ -86,34 +113,17 @@ class RoutingRepository(private val context: Context) {
             if (wps.length() == 0) return@withContext null
             val wp = wps.getJSONObject(0)
             val dist = wp.optDouble("distance", 9999.0)
-            if (dist > 75.0) return@withContext null // too far – mid-house, don't snap to unreachable
-            val loc = wp.getJSONArray("location") // [lon, lat]
+            if (dist > 75.0) return@withContext null
+            val loc = wp.getJSONArray("location")
             val snapLon = loc.getDouble(0)
             val snapLat = loc.getDouble(1)
-            // Ensure not null island
             if (snapLat == 0.0 && snapLon == 0.0) return@withContext null
             snapLat to snapLon
         } catch (_: Exception) { null }
     }
 
-    private fun tryOsrm(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): RouteResult? {
+    private fun tryFosgis(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): RouteResult? {
         return try {
-            // OSRM demo server — router.project-osrm.org (open, free, OSM data)
-            val urlStr = "https://router.project-osrm.org/route/v1/driving/${fromLon},${fromLat};${toLon},${toLat}?overview=full&geometries=geojson"
-            val conn = URL(urlStr).openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 8000
-            conn.readTimeout = 8000
-            conn.setRequestProperty("User-Agent", "NOVA-GPS-PRO/1.0 (OSM)")
-            if (conn.responseCode != 200) return null
-            val body = conn.inputStream.bufferedReader().readText()
-            parseOsrm(body)
-        } catch (_: Exception) { null }
-    }
-
-    private fun tryOsrmFallback(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): RouteResult? {
-        return try {
-            // Alternative: OSRM via routing.openstreetmap.de (ROUTE)
             val urlStr = "https://routing.openstreetmap.de/routed-car/route/v1/driving/${fromLon},${fromLat};${toLon},${toLat}?overview=full&geometries=geojson"
             val conn = URL(urlStr).openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
@@ -126,6 +136,98 @@ class RoutingRepository(private val context: Context) {
         } catch (_: Exception) { null }
     }
 
+    private fun tryOsrmDemo(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): RouteResult? {
+        return try {
+            val urlStr = "https://router.project-osrm.org/route/v1/driving/${fromLon},${fromLat};${toLon},${toLat}?overview=full&geometries=geojson"
+            val conn = URL(urlStr).openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+            conn.setRequestProperty("User-Agent", "NOVA-GPS-PRO/1.0 (OSM)")
+            if (conn.responseCode != 200) return null
+            val body = conn.inputStream.bufferedReader().readText()
+            parseOsrm(body)
+        } catch (_: Exception) { null }
+    }
+
+    private fun tryValhalla(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): RouteResult? {
+        return try {
+            // Valhalla via openstreetmap.de – JSON POST alternative would be more robust, but GET via OSRM-compatible endpoint not available.
+            // Use OSRM-compatible fallback via valhalla's OSRM API if exposed. For now, use FOSSGIS-like.
+            // Simple: use valhalla routing via https://valhalla1.openstreetmap.de/route?json=...
+            val jsonBody = """{"locations":[{"lat":$fromLat,"lon":$fromLon},{"lat":$toLat,"lon":$toLon}],"costing":"auto","directions_options":{"units":"kilometers"}}"""
+            val url = URL("https://valhalla1.openstreetmap.de/route")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 9000
+            conn.readTimeout = 9000
+            conn.setRequestProperty("User-Agent", "NOVA-GPS-PRO/1.0 (OSM)")
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            conn.outputStream.use { it.write(jsonBody.toByteArray()) }
+            if (conn.responseCode != 200) return null
+            val body = conn.inputStream.bufferedReader().readText()
+            parseValhalla(body)
+        } catch (_: Exception) { null }
+    }
+
+    private fun parseValhalla(jsonStr: String): RouteResult? {
+        return try {
+            val json = JSONObject(jsonStr)
+            val trip = json.optJSONObject("trip") ?: return null
+            val status = trip.optInt("status", 0)
+            if (status != 0) return null
+            // Valhalla returns legs with shape – need to decode polyline. Use summary distance/time and straight line fallback for shape if needed.
+            val summary = trip.optJSONObject("summary") ?: return null
+            val distKm = summary.optDouble("length", -1.0)
+            val timeSec = summary.optDouble("time", -1.0)
+            if (distKm < 0 || timeSec < 0) return null
+            val dist = distKm * 1000.0
+            // Try to get shape – decoded polyline6
+            val legs = trip.optJSONArray("legs")
+            if (legs != null && legs.length() > 0) {
+                val leg0 = legs.getJSONObject(0)
+                val shape = leg0.optString("shape", "")
+                if (shape.isNotEmpty()) {
+                    val coords = decodePolyline(shape, 6)
+                    if (coords.size >= 2) return RouteResult(coords, dist, timeSec, isRoad = true)
+                }
+            }
+            null
+        } catch (_: Exception) { null }
+    }
+
+    private fun decodePolyline(encoded: String, precision: Int): List<Pair<Double, Double>> {
+        val coords = mutableListOf<Pair<Double, Double>>()
+        var index = 0
+        var lat = 0
+        var lng = 0
+        val factor = 10.0.pow(precision.toDouble())
+        while (index < encoded.length) {
+            var b: Int
+            var shift = 0
+            var result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            val dlat = if ((result and 1) != 0) (result shr 1).inv() else (result shr 1)
+            lat += dlat
+            shift = 0
+            result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            val dlng = if ((result and 1) != 0) (result shr 1).inv() else (result shr 1)
+            lng += dlng
+            coords.add(Pair(lat / factor, lng / factor))
+        }
+        return coords
+    }
+
     private fun parseOsrm(jsonStr: String): RouteResult? {
         return try {
             val json = JSONObject(jsonStr)
@@ -136,7 +238,7 @@ class RoutingRepository(private val context: Context) {
             val dist = r.getDouble("distance")
             val dur = r.getDouble("duration")
             val geom = r.getJSONObject("geometry")
-            val coordsArr = geom.getJSONArray("coordinates") // [lon, lat]
+            val coordsArr = geom.getJSONArray("coordinates")
             val coords = mutableListOf<Pair<Double, Double>>()
             for (i in 0 until coordsArr.length()) {
                 val c = coordsArr.getJSONArray(i)

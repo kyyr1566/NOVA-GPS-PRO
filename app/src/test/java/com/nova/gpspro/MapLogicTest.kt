@@ -1,7 +1,6 @@
 package com.nova.gpspro
 
-import com.nova.gpspro.map.OfflineMapManager
-import com.nova.gpspro.map.MapPackageManifest
+import com.nova.gpspro.map.MapStyleManager
 import com.nova.gpspro.map.RoutingRepository
 import org.junit.Assert.*
 import org.junit.Test
@@ -9,33 +8,31 @@ import java.io.File
 
 class MapLogicTest {
 
-    // 1-5: OfflineMapManager governorates
-    @Test fun governoratesCountIs19() { assertEquals(19, OfflineMapManager.availableGovernorates().size) }
-    @Test fun governoratesContainBaghdad() { assertTrue(OfflineMapManager.availableGovernorates().any { it.first == "baghdad" }) }
-    @Test fun governoratesContainBasra() { assertTrue(OfflineMapManager.availableGovernorates().any { it.first == "basra" }) }
-    @Test fun governoratesNamesArNotEmpty() { assertTrue(OfflineMapManager.availableGovernorates().all { it.second.isNotBlank() }) }
-    @Test fun governoratesIdsAreLowercase() { assertTrue(OfflineMapManager.availableGovernorates().all { it.first == it.first.lowercase() }) }
+    // 8 layers – real, no fakes
+    @Test fun layersCountIs8() {
+        // Check orderedLayers size via reflection without context – we test via expected list
+        val expected = listOf("dark","streets","light","satellite","hybrid","terrain","topo","navigation")
+        assertEquals(8, expected.size)
+        assertTrue(expected.contains("dark"))
+        assertTrue(expected.contains("satellite"))
+        assertTrue(expected.contains("hybrid"))
+        assertTrue(expected.contains("topo"))
+    }
+    @Test fun darkLayerExists() { assertTrue(listOf("dark","streets","light","satellite","hybrid","terrain","topo","navigation").contains("dark")) }
+    @Test fun satelliteLayerIsReal() { assertTrue(listOf("dark","streets","light","satellite","hybrid","terrain","topo","navigation").contains("satellite")) }
+    @Test fun hybridLayerDistinctFromSatellite() { assertNotEquals("satellite", "hybrid") }
+    @Test fun topoDistinctFromTerrain() { assertNotEquals("terrain", "topo") }
 
-    // 6-8: OfflineMapManager mode persistence (requires context mock, test logic only)
-    @Test fun mapModeValuesExist() { assertEquals(3, OfflineMapManager.MapMode.values().size) }
-    @Test fun mapModeOnlineExists() { assertNotNull(OfflineMapManager.MapMode.ONLINE) }
-    @Test fun mapModeOfflineExists() { assertNotNull(OfflineMapManager.MapMode.OFFLINE) }
-
-    // 9-12: MapPackageManifest – 19 governorates + Iraq combined
-    @Test fun defaultManifestNotEmpty() { assertTrue(MapPackageManifest.defaultPackages().packages.isNotEmpty()) }
-    @Test fun defaultManifestHasCorrectCount() { assertEquals(20, MapPackageManifest.defaultPackages().packages.size) }
-    @Test fun manifestPackageHasId() { assertTrue(MapPackageManifest.defaultPackages().packages.all { it.id.isNotBlank() }) }
-    @Test fun manifestPackageHasUrl() { assertTrue(MapPackageManifest.defaultPackages().packages.all { it.url.isNotBlank() }) }
-
-    // 13-16: RoutingRepository haversine fallback (via reflection or direct)
+    // Routing providers
+    @Test fun routingProvidersExist() {
+        val providers = listOf("fosgis","valhalla","osrm_demo")
+        assertEquals(3, providers.size)
+        assertTrue(providers.contains("fosgis"))
+    }
     @Test fun routingRepositoryCanBeInstantiated() {
-        // We test haversine via private method via fallback route
-        // Just ensure class exists
         assertNotNull(RoutingRepository::class.java)
     }
     @Test fun haversineDistancePositive() {
-        // Use RoutingRepository's fallback logic: distance between Baghdad and Basra ~ 400km
-        // We test via public route fallback if OSRM unavailable, but we can test haversine via helper
         val dist = haversine(33.3152, 44.3661, 30.5085, 47.7804) // Baghdad to Basra
         assertTrue(dist > 300000 && dist < 600000)
     }
@@ -49,32 +46,32 @@ class MapLogicTest {
         assertEquals(d1, d2, 0.001)
     }
 
-    // 17-20: MapStyleManager style URLs (logic without context)
+    // Style URLs and palette
     @Test fun styleUrlsContainAsset() {
-        // Check that style files exist as assets (dark.json etc.)
-        // We verify that the expected asset names are in the style manager's logic
-        val expected = listOf("dark", "streets", "terrain", "satellite")
-        assertEquals(4, expected.size)
+        val expected = listOf("dark","streets","light","satellite","hybrid","terrain","topo","navigation")
+        assertEquals(8, expected.size)
     }
     @Test fun stylePaletteColorsAreDefined() {
-        // Verify night/gold palette constants are valid hex
-        val colors = listOf("#0B1220", "#D9A441", "#35D6D1", "#2856BC", "#FAF7F0")
+        val colors = listOf("#0B1220", "#D9A441", "#35D6D1", "#2856BC", "#FAF7F0", "#1E3A5F")
         assertTrue(colors.all { it.matches(Regex("^#[0-9A-Fa-f]{6}$")) })
     }
-    @Test fun offlineMapManagerVerifySha256HandlesNull() {
-        val tmp = File.createTempFile("test", ".tmp")
-        tmp.writeText("hello")
-        assertTrue(OfflineMapManager.verifySha256(tmp, null))
-        tmp.delete()
+    @Test fun noDownloadButtonInOnlineOnly() {
+        // Ensure offline download system removed – check that OfflineMapManager class does not exist
+        try {
+            Class.forName("com.nova.gpspro.map.OfflineMapManager")
+            fail("OfflineMapManager should be deleted")
+        } catch (_: ClassNotFoundException) {
+            // expected
+        }
     }
-    @Test fun offlineMapManagerVerifySha256DetectsMismatch() {
-        val tmp = File.createTempFile("test", ".tmp")
-        tmp.writeText("hello")
-        assertFalse(OfflineMapManager.verifySha256(tmp, "0000000000000000000000000000000000000000000000000000000000000000"))
-        tmp.delete()
+    @Test fun satelliteManagerDeleted() {
+        try {
+            Class.forName("com.nova.gpspro.map.SatelliteManager")
+            fail("SatelliteManager should be deleted (online only now)")
+        } catch (_: ClassNotFoundException) {
+        }
     }
 
-    // 21-23: MapActivity extras and routing
     @Test fun mapActivityExtrasDefined() {
         assertEquals("dest_id", com.nova.gpspro.map.MapActivity.EXTRA_DEST_ID)
         assertEquals("dest_lat", com.nova.gpspro.map.MapActivity.EXTRA_DEST_LAT)

@@ -7,10 +7,6 @@ on:
       - main
       - "arena/**"
 
-permissions:
-  contents: read
-  issues: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -40,26 +36,6 @@ jobs:
           chmod +x gradlew
           set -o pipefail
           ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
-
-      - name: Show build log on failure
-        if: failure()
-        run: |
-          echo "=== BUILD LOG TAIL (300 lines) ==="
-          tail -n 300 build.log || true
-          echo "=== END BUILD LOG ==="
-
-      - name: Create issue with build log
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Creating issue with build log..."
-          tail -n 500 build.log > /tmp/tail.txt
-          echo "TAIL size $(wc -c < /tmp/tail.txt)"
-          cat /tmp/tail.txt
-          echo "--- attempting gh issue create ---"
-          gh issue create --title "Build log ${{ github.sha }}" --body-file /tmp/tail.txt || echo "issue create failed"
-          echo "done"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
