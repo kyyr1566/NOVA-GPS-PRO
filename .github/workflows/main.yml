@@ -44,16 +44,17 @@ jobs:
           tail -n 300 build.log || true
           echo "=== END BUILD LOG ==="
 
-      - name: Comment build log excerpt
+      - name: Create issue with build log
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Posting build log excerpt as commit comment..."
-          TAIL=$(tail -n 200 build.log | head -c 60000)
-          # Escape for JSON via gh api -f
+          echo "Creating issue with build log..."
+          TAIL=$(tail -n 400 build.log | head -c 90000)
           printf "%s" "$TAIL" > /tmp/tail.txt
-          gh api repos/${{ github.repository }}/commits/${{ github.sha }}/comments --raw-field body="$(cat /tmp/tail.txt)" || echo "comment failed"
+          echo "TAIL size $(wc -c < /tmp/tail.txt)"
+          # Create issue via gh api - body from file
+          gh api repos/${{ github.repository }}/issues -f title="Build log ${{ github.sha }}" --raw-field body="$(cat /tmp/tail.txt | head -c 65000)" || echo "issue create failed"
           cat /tmp/tail.txt
 
       - name: Upload APK
