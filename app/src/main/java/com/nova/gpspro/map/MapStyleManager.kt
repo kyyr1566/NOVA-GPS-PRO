@@ -58,16 +58,7 @@ class MapStyleManager(private val context: Context) {
                         b3?.setProperties(
                             PropertyFactory.visibility(Property.VISIBLE),
                             PropertyFactory.fillExtrusionOpacity(0.88f),
-                            // Use OSM heights with fallback: render_height -> height -> levels*3.5 -> 8m default
-                            // Our style already has identity for render_height, but we ensure realistic extrusion
-                            PropertyFactory.fillExtrusionHeight(
-                                // Expression equivalent: coalesce(render_height, height, levels*3.5, 6)
-                                // MapLibre Android PropertyFactory requires Float or Expression; use expression via JSON would be set in style.
-                                // For runtime, we set via expression if available – fallback to identity which already works.
-                                // Keep existing identity; just ensure opacity and visibility.
-                                // If we want to override, we would do:
-                                // PropertyFactory.fillExtrusionHeight(Expression.coalesce(Expression.get("render_height"), Expression.product(Expression.get("levels"), Expression.literal(3.5f)), Expression.literal(8f)))
-                            ),
+                            // Keep style-defined height (coalesce render_height/height/levels*3.5) – opacity+color only here
                             PropertyFactory.fillExtrusionColor("#2A3A4A"),
                             PropertyFactory.fillExtrusionBase(0f)
                         )
