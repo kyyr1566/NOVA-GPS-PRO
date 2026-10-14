@@ -47,20 +47,20 @@ jobs:
             test.log
           if-no-files-found: warn
 
-      - name: Create issue with build log on failure
+      - name: Annotate build log on failure
         if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Creating issue with build log..."
-          TAIL=$(tail -n 300 build.log 2>/dev/null | head -c 40000)
-          if [ -z "$TAIL" ]; then TAIL="(empty)"; fi
-          BODY=$(printf "Build failed run %s sha %s\n\n\`\`\`\n%s\n\`\`\`" "${{ github.run_id }}" "${{ github.sha }}" "$TAIL")
-          echo "$BODY" > /tmp/issue_body.txt
-          head -n 50 /tmp/issue_body.txt
-          gh issue create --title "Build log ${{ github.run_id }}" --body-file /tmp/issue_body.txt 2>&1 | head -n 20 || \
-          gh api repos/${{ github.repository }}/issues -f title="Build log ${{ github.run_id }}" -F body=@/tmp/issue_body.txt 2>&1 | head -n 20 || true
-          echo "done"
+          echo "Annotating build log..."
+          TAIL=$(tail -n 60 build.log 2>/dev/null | tr '\n' '; ' | head -c 900)
+          if [ -z "$TAIL" ]; then TAIL="no log"; fi
+          echo "::error file=app/src/main/java/com/nova/gpspro/ui/RadarView.kt,line=1,title=BuildError::$TAIL"
+          echo "::warning file=app/src/main/java/com/nova/gpspro/ui/RadarPage.kt,line=1,title=BuildWarning::$TAIL"
+          # also dump to step summary for UI
+          echo "### Build log tail" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 200 build.log >> $GITHUB_STEP_SUMMARY 2>&1 || echo "no log" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat build.log | tail -n 200
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
