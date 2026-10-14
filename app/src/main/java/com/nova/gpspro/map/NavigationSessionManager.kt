@@ -65,6 +65,7 @@ class NavigationSessionManager(
         val m = map ?: return
         val style = m.style ?: return
         try {
+            style.removeLayer("nova-route-glow")
             style.removeLayer("nova-route-layer")
             style.removeSource("nova-route-source")
             // Build LineString coordinates as [lon, lat]
@@ -72,11 +73,23 @@ class NavigationSessionManager(
             val geoJson = """{"type":"Feature","geometry":{"type":"LineString","coordinates":[$coords]},"properties":{}}"""
             val source = GeoJsonSource("nova-route-source", geoJson)
             style.addSource(source)
+            // Glow / halo outer (wider, soft) – draws beneath
+            val glow = LineLayer("nova-route-glow", "nova-route-source")
+            glow.setProperties(
+                PropertyFactory.lineColor(if (route.isRoad) "#00B8D4" else "#D9A441"),
+                PropertyFactory.lineWidth(if (route.isRoad) 12f else 8f),
+                PropertyFactory.lineOpacity(if (route.isRoad) 0.22f else 0.35f),
+                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                PropertyFactory.lineBlur(1.2f)
+            )
+            style.addLayer(glow)
+            // Main turquoise cyan – matches reference image
             val layer = LineLayer("nova-route-layer", "nova-route-source")
             layer.setProperties(
-                PropertyFactory.lineColor(if (route.isRoad) "#2856BC" else "#D9A441"),
-                PropertyFactory.lineWidth(5f),
-                PropertyFactory.lineOpacity(0.95f),
+                PropertyFactory.lineColor(if (route.isRoad) "#00E5FF" else "#D9A441"),
+                PropertyFactory.lineWidth(if (route.isRoad) 5.8f else 4.5f),
+                PropertyFactory.lineOpacity(0.98f),
                 PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                 PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
             )
@@ -87,6 +100,9 @@ class NavigationSessionManager(
     fun clearRoute() {
         val m = map ?: return
         val style = m.style ?: return
+        try {
+            style.removeLayer("nova-route-glow")
+        } catch (_: Exception) {}
         try {
             style.removeLayer("nova-route-layer")
             style.removeSource("nova-route-source")

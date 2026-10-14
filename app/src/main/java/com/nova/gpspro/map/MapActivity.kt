@@ -179,6 +179,46 @@ class MapActivity : ComponentActivity() {
         try { map.uiSettings.isScrollGesturesEnabled = true } catch (_: Exception) {}
         try { map.uiSettings.isDoubleTapGesturesEnabled = true } catch (_: Exception) {}
 
+        // Handle offline PMTiles – respect Online/Smart/Offline mode
+        val mode = try { OfflineMapManager.getMode(this) } catch (_: Exception) { OfflineMapManager.MapMode.SMART }
+        val useOffline = mode != OfflineMapManager.MapMode.ONLINE && OfflineMapManager.listOfflineFiles(this).isNotEmpty()
+        val offlineStyleJson = if (useOffline) try { OfflineMapManager.buildOfflineStyleJson(this) } catch (_: Exception) { null } else null
+        if (offlineStyleJson != null) {
+            try {
+                val builder = Style.Builder().fromJson(offlineStyleJson)
+                map.setStyle(builder, object : Style.OnStyleLoaded {
+                    override fun onStyleLoaded(style: Style) {
+                        try {
+                            styleManager.applyStyle(style, map)
+                            savedRepo.attach(map)
+                            targetDestination?.let { dest -> savedRepo.highlight(dest.id) }
+                        } catch (e: Exception) { android.util.Log.e("NOVA_MAP", "offline style apply failed", e) }
+                    }
+                })
+                map.addOnCameraIdleListener { cameraController.saveCamera(map.cameraPosition) }
+                cameraController.restoreCamera()?.let { pos -> map.moveCamera(CameraUpdateFactory.newCameraPosition(pos)) }
+                // Click listener for saved pins – works offline too
+                map.addOnMapClickListener { point ->
+                    try {
+                        val screen = map.projection.toScreenLocation(point)
+                        val feats = map.queryRenderedFeatures(screen, "nova-dest-layer")
+                        if (feats.isNotEmpty()) {
+                            val id = feats[0].getStringProperty("id")
+                            val dest = if (id != null) savedRepo.getDestinationById(id) else null
+                            if (dest != null) {
+                                runOnUiThread { showMarkerCard(dest) }
+                                return@addOnMapClickListener true
+                            }
+                        }
+                    } catch (_: Exception) {}
+                    false
+                }
+                return
+            } catch (e: Exception) {
+                android.util.Log.e("NOVA_MAP", "offline style failed, falling back to online", e)
+            }
+        }
+
         val styleUrl = try { styleManager.currentStyleUrl() } catch (_: Exception) { "asset://mapstyles/dark.json" }
         val effectiveStyle = if (styleUrl.startsWith("pmtiles://")) "asset://mapstyles/dark.json" else styleUrl
         try {
@@ -208,129 +248,230 @@ class MapActivity : ComponentActivity() {
         map.addOnCameraIdleListener {
             cameraController.saveCamera(map.cameraPosition)
         }
-
         cameraController.restoreCamera()?.let { pos ->
             map.moveCamera(CameraUpdateFactory.newCameraPosition(pos))
+        }
+        // Tap on saved orange pin shows card with exact coordinates
+        map.addOnMapClickListener { point ->
+            try {
+                val screen = map.projection.toScreenLocation(point)
+                val feats = map.queryRenderedFeatures(screen, "nova-dest-layer")
+                if (feats.isNotEmpty()) {
+                    val id = feats[0].getStringProperty("id")
+                    val dest = if (id != null) savedRepo.getDestinationById(id) else null
+                    if (dest != null) {
+                        runOnUiThread { showMarkerCard(dest) }
+                        return@addOnMapClickListener true
+                    }
+                }
+            } catch (_: Exception) {}
+            false
         }
     }
 
     private fun setupUi(root: FrameLayout) {
-        // Top bar: back + destination/search + layers
-        val topBar = LinearLayout(this).apply {
+        // ── Top white pill – matches reference image ──
+        val topPill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setPadding(dp(6), dp(6), dp(6), dp(6))
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                cornerRadius = dp(12).toFloat()
-                setColor(0xCC0B1220.toInt())
+                cornerRadius = dp(24).toFloat()
+                setColor(0xFFFFFFFF.toInt())
             }
-            elevation = dp(4).toFloat()
+            elevation = dp(6).toFloat()
         }
-        val backBtn = smallIconButton("‹", "رجوع") { finish() }
+        val backBtn = TextView(this).apply {
+            text = "‹"; contentDescription = "رجوع"; gravity = Gravity.CENTER
+            setTextColor(C.TEXT); textSize = 22f
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFF0F1F5.toInt())
+            }
+            setOnClickListener { finish() }
+        }
+        // Center: label "الوجهة" + name
+        val centerCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        val labelView = TextView(this).apply { text = "الوجهة"; setTextColor(0xFF8A8E99.toInt()); textSize = 11f; gravity = Gravity.CENTER }
         destNameView = TextView(this).apply {
-            text = targetDestination?.name ?: "الخرائط"
-            setTextColor(C.TEXT)
-            textSize = 15f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            gravity = Gravity.CENTER
+            text = targetDestination?.name ?: "جسر الروضة"
+            setTextColor(0xFF2E5BDA.toInt()); textSize = 16f; gravity = Gravity.CENTER
+            maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         }
-        val layersBtn = smallIconButton("◫", "الطبقات") { showLayersSheet() }
-        val settingsBtn = smallIconButton("⚙", "الإعدادات") { showMapSettings() }
-
-        topBar.addView(backBtn, LinearLayout.LayoutParams(dp(36), dp(36)))
-        topBar.addView(destNameView, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(8), 0, dp(8), 0) })
-        topBar.addView(layersBtn, LinearLayout.LayoutParams(dp(36), dp(36)).apply { setMargins(0, 0, dp(4), 0) })
-        topBar.addView(settingsBtn, LinearLayout.LayoutParams(dp(36), dp(36)))
-
+        centerCol.addView(labelView); centerCol.addView(destNameView)
+        val closeBtn = TextView(this).apply {
+            text = "×"; contentDescription = "إغلاق"; gravity = Gravity.CENTER
+            setTextColor(0xFF6B7280.toInt()); textSize = 20f
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFF0F1F5.toInt())
+            }
+            setOnClickListener { finish() }
+        }
+        // Keep layers access via long-press on close or via side button – but also add hidden layers button top-left for power users
+        topPill.addView(backBtn, LinearLayout.LayoutParams(dp(32), dp(32)))
+        topPill.addView(centerCol, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(8), 0, dp(8), 0) })
+        topPill.addView(closeBtn, LinearLayout.LayoutParams(dp(32), dp(32)))
         val topParams = FrameLayout.LayoutParams(-1, -2).apply {
             gravity = Gravity.TOP
-            setMargins(dp(8), dp(12), dp(8), 0)
+            setMargins(dp(12), dp(14), dp(12), 0)
         }
-        root.addView(topBar, topParams)
+        root.addView(topPill, topParams)
 
-        // Side controls: compass, my location, 3D, zoom, mode
-        val sideCol = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-        }
+        // Hidden quick access: long-press close opens layers/settings – plus visible side column
+        closeBtn.setOnLongClickListener { showLayersSheet(); true }
+
+        // ── Side controls – all on right, small, white with blue icons, 36dp visual 48dp touch ──
+        val sideCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        val layersBtn = smallIconButton("⬢", "الطبقات") { showLayersSheet() }
+        val mapTypeBtn = smallIconButton("▭", "نوع الخريطة") { showLayersSheet() }
         val compassBtn = smallIconButton("◉", "الشمال") { map?.let { cameraController.bearingNorth(it) } }
         val myLocBtn = smallIconButton("◎", "موقعي") { centerToMyLocation() }
         val threeDBtn = smallIconButton("3D", "ثلاثي الأبعاد") { toggle3D() }
         val zoomInBtn = smallIconButton("+", "تكبير") { map?.animateCamera(CameraUpdateFactory.zoomIn()) }
         val zoomOutBtn = smallIconButton("−", "تصغير") { map?.animateCamera(CameraUpdateFactory.zoomOut()) }
-        val modeBtn = smallIconButton("◐", "وضع الاتصال") { cycleMode() }
 
-        // RTL professional vertical column: 36dp visual, 48dp touch target (Material guidelines)
-        listOf(compassBtn, myLocBtn, threeDBtn, zoomInBtn, zoomOutBtn, modeBtn).forEach { btn ->
+        // Top two (layers) sit near top-right under pill, rest centered
+        val topSideCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        listOf(layersBtn, mapTypeBtn).forEach { btn ->
             val wrapper = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { setMargins(0, dp(3), 0, dp(3)) }
-                // transparent, larger hit area; inner is 36dp visual
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { setMargins(0, dp(2), 0, dp(2)) }
                 isClickable = false
             }
-            val innerParams = FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER)
-            wrapper.addView(btn, innerParams)
-            // expand hit-area: tapping wrapper padding triggers button
+            wrapper.addView(btn, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
+            wrapper.setOnClickListener { btn.performClick() }
+            topSideCol.addView(wrapper)
+        }
+        val topSideParams = FrameLayout.LayoutParams(-2, -2).apply {
+            gravity = Gravity.TOP or Gravity.END
+            setMargins(0, dp(72), dp(8), 0)
+        }
+        root.addView(topSideCol, topSideParams)
+
+        listOf(compassBtn, myLocBtn, threeDBtn, zoomInBtn, zoomOutBtn).forEach { btn ->
+            val wrapper = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { setMargins(0, dp(2), 0, dp(2)) }
+                isClickable = false
+            }
+            wrapper.addView(btn, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
             wrapper.setOnClickListener { btn.performClick() }
             sideCol.addView(wrapper)
         }
         val sideParams = FrameLayout.LayoutParams(-2, -2).apply {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setMargins(0, 0, dp(4), 0)
+            setMargins(0, 0, dp(8), 0)
         }
         root.addView(sideCol, sideParams)
 
-        // Bottom bar: distance | ETA | speed + start nav
+        // ── Bottom floating card – not full width, rounded 20dp, like reference ──
         bottomBar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(12), dp(10), dp(12), dp(10))
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(14), dp(10), dp(14), dp(14))
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                cornerRadius = dp(16).toFloat()
-                setColor(0xEEFAF7F0.toInt())
+                cornerRadius = dp(20).toFloat()
+                setColor(0xFFFFFFFF.toInt())
             }
-            elevation = dp(6).toFloat()
+            elevation = dp(10).toFloat()
             visibility = if (targetDestination != null) View.VISIBLE else View.GONE
         }
-        distanceView = TextView(this).apply { text = "—"; setTextColor(C.TEXT); textSize = 13f; gravity = Gravity.CENTER; textDirection = View.TEXT_DIRECTION_LTR }
-        etaView = TextView(this).apply { text = "—"; setTextColor(C.TEXT); textSize = 13f; gravity = Gravity.CENTER }
-        speedView = TextView(this).apply { text = "—"; setTextColor(C.TEXT); textSize = 13f; gravity = Gravity.CENTER; textDirection = View.TEXT_DIRECTION_LTR }
-        val startBtn = TextView(this).apply {
-            text = "بدء الملاحة"
-            setTextColor(android.graphics.Color.WHITE)
-            textSize = 13f
-            gravity = Gravity.CENTER
+        // Handle
+        val handle = View(this).apply {
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                cornerRadius = dp(10).toFloat()
-                setColor(C.PRIMARY_A)
+                cornerRadius = dp(2).toFloat(); setColor(0xFFE5E7EB.toInt())
             }
-            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        bottomBar.addView(handle, LinearLayout.LayoutParams(dp(36), dp(4)).apply { gravity = Gravity.CENTER; setMargins(0, 0, 0, dp(10)) })
+        // Header row: icon + title/subtitle + arrow
+        val headerRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val iconBox = FrameLayout(this).apply {
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFEEF2FF.toInt())
+            }
+        }
+        val bridgeIcon = TextView(this).apply { text = "▭"; gravity = Gravity.CENTER; setTextColor(0xFF3F74EA.toInt()); textSize = 18f }
+        iconBox.addView(bridgeIcon, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
+        headerRow.addView(iconBox, LinearLayout.LayoutParams(dp(44), dp(44)))
+        val titleCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
+        val cardTitle = TextView(this).apply {
+            text = targetDestination?.name ?: "جسر الروضة"
+            setTextColor(C.TEXT); textSize = 16f; maxLines = 1
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+        }
+        val cardSubtitle = TextView(this).apply {
+            text = "٤,٨ كم  •  ١٢ دقيقة"
+            setTextColor(C.TEXT2); textSize = 13f
+        }
+        titleCol.addView(cardTitle); titleCol.addView(cardSubtitle)
+        headerRow.addView(titleCol, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(10), 0, dp(10), 0) })
+        val arrowBtn = TextView(this).apply {
+            text = "›"; gravity = Gravity.CENTER; setTextColor(0xFF3F74EA.toInt()); textSize = 20f
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFF0F4FF.toInt())
+            }
             setOnClickListener { startNavigation() }
         }
-        bottomBar.addView(distanceView, LinearLayout.LayoutParams(0, -2, 1f))
-        bottomBar.addView(etaView, LinearLayout.LayoutParams(0, -2, 1f))
-        bottomBar.addView(speedView, LinearLayout.LayoutParams(0, -2, 1f))
-        bottomBar.addView(startBtn, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
+        headerRow.addView(arrowBtn, LinearLayout.LayoutParams(dp(36), dp(36)))
+        bottomBar.addView(headerRow, LinearLayout.LayoutParams(-1, -2))
+
+        // Divider
+        val div1 = View(this).apply { setBackgroundColor(0xFFF0F1F5.toInt()) }
+        bottomBar.addView(div1, LinearLayout.LayoutParams(-1, dp(1)).apply { setMargins(0, dp(12), 0, dp(12)) })
+
+        // Stats row: 3 cols
+        val statsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        distanceView = TextView(this).apply { text = "٤,٨ كم"; setTextColor(C.TEXT); textSize = 16f; gravity = Gravity.CENTER; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) }
+        val dLab = TextView(this).apply { text = "المسافة المتبقية"; setTextColor(C.TEXT2); textSize = 11f; gravity = Gravity.CENTER }
+        val dCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        dCol.addView(distanceView); dCol.addView(dLab)
+        etaView = TextView(this).apply { text = "١٢ دقيقة"; setTextColor(C.TEXT); textSize = 16f; gravity = Gravity.CENTER; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) }
+        val eLab = TextView(this).apply { text = "الوقت المتوقع"; setTextColor(C.TEXT2); textSize = 11f; gravity = Gravity.CENTER }
+        val eCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        eCol.addView(etaView); eCol.addView(eLab)
+        speedView = TextView(this).apply { text = "٠ كم/س"; setTextColor(C.TEXT); textSize = 16f; gravity = Gravity.CENTER; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) }
+        val sLab = TextView(this).apply { text = "السرعة الحالية"; setTextColor(C.TEXT2); textSize = 11f; gravity = Gravity.CENTER }
+        val sCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        sCol.addView(speedView); sCol.addView(sLab)
+        statsRow.addView(sCol, LinearLayout.LayoutParams(0, -2, 1f))
+        statsRow.addView(View(this).apply { setBackgroundColor(0xFFE5E7EB.toInt()) }, LinearLayout.LayoutParams(dp(1), dp(36)).apply { setMargins(dp(4), 0, dp(4), 0) })
+        statsRow.addView(eCol, LinearLayout.LayoutParams(0, -2, 1f))
+        statsRow.addView(View(this).apply { setBackgroundColor(0xFFE5E7EB.toInt()) }, LinearLayout.LayoutParams(dp(1), dp(36)).apply { setMargins(dp(4), 0, dp(4), 0) })
+        statsRow.addView(dCol, LinearLayout.LayoutParams(0, -2, 1f))
+        bottomBar.addView(statsRow, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(14)) })
+
+        // Blue button
+        val startBtn = TextView(this).apply {
+            text = "◤  ابدأ الملاحة"
+            setTextColor(android.graphics.Color.WHITE); textSize = 15f; gravity = Gravity.CENTER
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            background = android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(0xFF3F74EA.toInt(), 0xFF2E56C8.toInt())
+            ).apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(14).toFloat() }
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            setOnClickListener { startNavigation() }
+        }
+        bottomBar.addView(startBtn, LinearLayout.LayoutParams(-1, -2))
+
+        // Keep refs for dynamic updates – cardTitle/subtitle will be updated via showPreviewCard
+        bottomBar.tag = cardTitle to cardSubtitle
 
         val bottomParams = FrameLayout.LayoutParams(-1, -2).apply {
             gravity = Gravity.BOTTOM
-            setMargins(dp(8), dp(8), dp(8), dp(12))
+            setMargins(dp(16), dp(8), dp(16), dp(16))
         }
         root.addView(bottomBar, bottomParams)
 
         // Attribution
         val attr = TextView(this).apply {
             text = "© OpenStreetMap"
-            setTextColor(0xFF2856BC.toInt())
-            textSize = 10f
+            setTextColor(0xFF2856BC.toInt()); textSize = 9f
             setPadding(dp(4), dp(2), dp(4), dp(2))
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                cornerRadius = dp(6).toFloat()
-                setColor(0xCCFFFFFF.toInt())
+                cornerRadius = dp(6).toFloat(); setColor(0xCCFFFFFF.toInt())
             }
             setOnClickListener {
                 try {
@@ -341,7 +482,7 @@ class MapActivity : ComponentActivity() {
         }
         val attrParams = FrameLayout.LayoutParams(-2, -2).apply {
             gravity = Gravity.BOTTOM or Gravity.START
-            setMargins(dp(8), dp(8), dp(8), dp(52))
+            setMargins(dp(12), dp(8), dp(12), dp(84))
         }
         root.addView(attr, attrParams)
 
@@ -350,6 +491,13 @@ class MapActivity : ComponentActivity() {
 
     private fun showPreviewCard(dest: Destination) {
         bottomBar.visibility = View.VISIBLE
+        // Update top pill title
+        try { destNameView.text = dest.name } catch (_: Exception) {}
+        // Update card header if available
+        try {
+            val tag = bottomBar.tag as? Pair<*, *>
+            (tag?.first as? TextView)?.text = dest.name
+        } catch (_: Exception) {}
         lifecycleScope.launch {
             val loc = locationController.lastLocation() ?: locationController.awaitFreshLocation()
             if (loc != null) {
@@ -358,8 +506,41 @@ class MapActivity : ComponentActivity() {
                 etaView.text = formatDuration(route.durationSeconds)
                 val speed = try { loc.speed.toDouble() } catch (_: Exception) { 0.0 }
                 speedView.text = formatSpeed(speed)
+                // Update subtitle in card header
+                try {
+                    val tag = bottomBar.tag as? Pair<*, *>
+                    (tag?.second as? TextView)?.text = "${formatDistance(route.distanceMeters)}  •  ${formatDuration(route.durationSeconds)}"
+                } catch (_: Exception) {}
             } else {
-                distanceView.text = String.format("%.1f كم", haversine(dest.latitude, dest.longitude))
+                val d = haversine(dest.latitude, dest.longitude)
+                val distStr = if (d > 0) String.format("%.1f كم", d/1000) else "—"
+                distanceView.text = distStr
+                try {
+                    val tag = bottomBar.tag as? Pair<*, *>
+                    (tag?.second as? TextView)?.text = distStr
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun showMarkerCard(dest: Destination) {
+        // Called when user taps a saved pin – shows same bottom card with exact coordinates
+        targetDestination = dest
+        pendingPreviewLat = dest.latitude
+        pendingPreviewLon = dest.longitude
+        pendingPreviewName = dest.name
+        savedRepo.highlight(dest.id)
+        showPreviewCard(dest)
+        // Also animate camera to marker
+        map?.let { m ->
+            val pos = CameraPosition.Builder().target(LatLng(dest.latitude, dest.longitude)).zoom(15.0).build()
+            m.animateCamera(CameraUpdateFactory.newCameraPosition(pos), 600)
+            lifecycleScope.launch {
+                try {
+                    val loc = locationController.lastLocation() ?: locationController.awaitFreshLocation()
+                    if (loc != null) navigationSession?.previewDestination(dest)
+                    if (loc != null) navigationSession?.requestRoute(loc.latitude, loc.longitude)
+                } catch (_: Exception) {}
             }
         }
     }
@@ -381,12 +562,13 @@ class MapActivity : ComponentActivity() {
             this.text = text
             this.contentDescription = desc
             gravity = Gravity.CENTER
-            setTextColor(C.TEXT)
+            setTextColor(C.PRIMARY_A) // blue matching identity
             textSize = 14f
+            typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(0xCCFFFFFF.toInt())
-                setStroke(dp(1), C.BORDER)
+                setColor(0xFFFFFFFF.toInt())
+                setStroke(dp(1), 0xFFE5E7EB.toInt())
             }
             elevation = dp(2).toFloat()
             setOnClickListener { onClick() }
@@ -514,40 +696,111 @@ class MapActivity : ComponentActivity() {
     }
 
     private fun showOfflineManager() {
+        val scroll = android.widget.ScrollView(this)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)) }
-        val packs = OfflineMapManager.availableGovernorates()
-        packs.forEach { (id, ar) ->
-            val has = OfflineMapManager.hasOffline(this, id)
-            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)) }
-            row.addView(TextView(this).apply { text = ar; setTextColor(C.TEXT); textSize = 14f; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) })
-            row.addView(TextView(this).apply {
+        scroll.addView(box)
+        // Load real manifest with sizes and URLs
+        val manifest = try { MapPackageManifest.defaultPackages() } catch (_: Exception) { null }
+        val pkgs = manifest?.packages ?: OfflineMapManager.availableGovernorates().map { (id, ar) ->
+            MapPackageManifest.PackageInfo(id, ar, id, "https://github.com/kyyr1566/NOVA-GPS-PRO/releases/download/maps-v1/$id.pmtiles", 0L, null, null, "1")
+        }
+        // Info header
+        box.addView(TextView(this).apply {
+            text = "الخرائط للعمل دون إنترنت (PMTiles Vector)\nالمصدر: OpenStreetMap (ODbL) عبر planetiler. كل محافظة ملف منفصل."
+            setTextColor(C.TEXT2); textSize = 12f; setPadding(0, 0, 0, dp(10))
+        })
+        // Progress observer map
+        val statusViews = mutableMapOf<String, TextView>()
+        pkgs.forEach { pkg ->
+            val has = OfflineMapManager.hasOffline(this, pkg.id)
+            val file = OfflineMapManager.pmtilesFile(this, pkg.id)
+            val sizeMb = if (pkg.sizeBytes > 0) String.format("%.0f MB", pkg.sizeBytes / 1024.0 / 1024.0) else "—"
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(10), dp(8), dp(10)) }
+            val nameCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
+            nameCol.addView(TextView(this).apply { text = pkg.nameAr; setTextColor(C.TEXT); textSize = 14f; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) })
+            nameCol.addView(TextView(this).apply {
+                val existsInfo = if (has) "✓ مثبت • ${String.format("%.1f MB", file.length()/1024.0/1024.0)}" else "الحجم: $sizeMb"
+                text = existsInfo; setTextColor(C.TEXT2); textSize = 11f
+            })
+            row.addView(nameCol)
+            val action = TextView(this).apply {
                 text = if (has) "✓ مثبت" else "تنزيل"
                 setTextColor(if (has) 0xFF1B8B2A.toInt() else C.PRIMARY_A)
-                textSize = 13f
+                textSize = 13f; gravity = Gravity.CENTER; minWidth = dp(78)
                 background = android.graphics.drawable.GradientDrawable().apply {
                     shape = android.graphics.drawable.GradientDrawable.RECTANGLE
                     cornerRadius = dp(8).toFloat()
-                    setColor(C.CARD_SOFT)
-                    setStroke(dp(1), C.BORDER)
+                    setColor(C.CARD_SOFT); setStroke(dp(1), C.BORDER)
                 }
-                setPadding(dp(10), dp(6), dp(10), dp(6))
-                setOnClickListener {
-                    if (has) {
-                        OfflineMapManager.deletePackage(this@MapActivity, id)
-                        text = "تنزيل"; setTextColor(C.PRIMARY_A)
-                        android.widget.Toast.makeText(this@MapActivity, "تم الحذف: $ar", android.widget.Toast.LENGTH_SHORT).show()
-                    } else {
-                        // Trigger WorkManager download (stub: show message, real download via worker)
-                        text = "قيد التنزيل…"
-                        android.widget.Toast.makeText(this@MapActivity, "بدء تنزيل $ar (يتطلب خادم PMTiles)", android.widget.Toast.LENGTH_LONG).show()
-                        // In real app: enqueue MapDownloadWorker with id
+                setPadding(dp(10), dp(7), dp(10), dp(7))
+            }
+            statusViews[pkg.id] = action
+            action.setOnClickListener {
+                if (OfflineMapManager.hasOffline(this@MapActivity, pkg.id)) {
+                    OfflineMapManager.deletePackage(this@MapActivity, pkg.id)
+                    action.text = "تنزيل"; action.setTextColor(C.PRIMARY_A)
+                    // Update subtitle
+                    try { (nameCol.getChildAt(1) as TextView).text = "الحجم: $sizeMb" } catch (_: Exception) {}
+                    android.widget.Toast.makeText(this@MapActivity, "تم الحذف: ${pkg.nameAr}", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    // Real download via WorkManager with progress, size, sha256, verification
+                    try {
+                        // Check network
+                        action.text = "0%"
+                        action.setTextColor(C.TEXT2)
+                        MapDownloadWorker.enqueue(this@MapActivity, pkg)
+                        android.widget.Toast.makeText(this@MapActivity, "بدء تنزيل ${pkg.nameAr} ($sizeMb)", android.widget.Toast.LENGTH_SHORT).show()
+                        // Observe progress
+                        val wm = androidx.work.WorkManager.getInstance(this@MapActivity)
+                        wm.getWorkInfosByTagLiveData(pkg.id).observe(this@MapActivity) { infos ->
+                            val info = infos?.firstOrNull() ?: return@observe
+                            val prog = info.progress.getInt("progress", -1)
+                            val state = info.state
+                            if (prog in 0..100 && state == androidx.work.WorkInfo.State.RUNNING) {
+                                action.text = "$prog%"
+                            } else if (state == androidx.work.WorkInfo.State.SUCCEEDED) {
+                                // Verify file
+                                val f = OfflineMapManager.pmtilesFile(this@MapActivity, pkg.id)
+                                val ok = f.exists() && f.length() > 1024 && OfflineMapManager.verifySha256(f, pkg.sha256)
+                                if (ok) {
+                                    action.text = "✓ مثبت"; action.setTextColor(0xFF1B8B2A.toInt())
+                                    try { (nameCol.getChildAt(1) as TextView).text = "✓ مثبت • ${String.format("%.1f MB", f.length()/1024.0/1024.0)}" } catch (_: Exception) {}
+                                    android.widget.Toast.makeText(this@MapActivity, "تم تثبيت ${pkg.nameAr} – جاهز دون إنترنت", android.widget.Toast.LENGTH_LONG).show()
+                                    // If this is first offline file, reload map style to offline
+                                    try { map?.let { m -> m.getStyle { style -> styleManager.applyStyle(style, m) } } } catch (_: Exception) {}
+                                } else {
+                                    action.text = "فشل التحقق"; action.setTextColor(0xFFD9544D.toInt())
+                                    android.widget.Toast.makeText(this@MapActivity, "فشل التحقق من ${pkg.nameAr}. احذف وحاول مرة أخرى.", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            } else if (state == androidx.work.WorkInfo.State.FAILED) {
+                                val err = info.outputData.getString("error") ?: "فشل"
+                                if (err.contains("404") || err.contains("Not Found")) {
+                                    action.text = "غير متوفر"; action.setTextColor(0xFFD9544D.toInt())
+                                    android.widget.Toast.makeText(this@MapActivity, "الملف غير متوفر بعد على الخادم. يحتاج إنتاج PMTiles ورفعه إلى Releases.\nراجع OfflineMapManager.kt للتعليمات.", android.widget.Toast.LENGTH_LONG).show()
+                                } else {
+                                    action.text = "خطأ"; action.setTextColor(0xFFD9544D.toInt())
+                                    android.widget.Toast.makeText(this@MapActivity, "فشل تنزيل ${pkg.nameAr}: $err", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            } else if (state == androidx.work.WorkInfo.State.CANCELLED) {
+                                action.text = "أُلغي"; action.setTextColor(C.TEXT2)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        action.text = "خطأ"
+                        android.widget.Toast.makeText(this@MapActivity, "تعذر البدء: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
                     }
                 }
-            })
+            }
+            row.addView(action, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
             box.addView(row)
             box.addView(View(this).apply { setBackgroundColor(C.BORDER); layoutParams = LinearLayout.LayoutParams(-1, dp(1)) })
         }
-        com.nova.gpspro.ui.NovaDialog(this).title("خرائط المحافظات (PMTiles)").content(box)
+        // Offline test hint
+        box.addView(TextView(this).apply {
+            text = "للاختبار: حمّل محافظة (مثلاً بغداد)، ثم فعّل وضع الطيران وأعد فتح الخريطة. سيتم تحميل الخريطة من pmtiles://file:// دون إنترنت."
+            setTextColor(C.TEXT2); textSize = 11f; setPadding(dp(4), dp(10), dp(4), dp(4))
+        })
+        com.nova.gpspro.ui.NovaDialog(this).title("خرائط المحافظات (PMTiles)").content(scroll)
             .button("إغلاق", C.TEXT2) { it.dismiss() }.show()
     }
 

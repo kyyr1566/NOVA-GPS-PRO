@@ -1,14 +1,21 @@
 package com.nova.gpspro.map
 
 import android.content.Context
-import android.content.SharedPreferences
 import java.io.File
 import java.security.MessageDigest
 
 /**
- * Manages offline PMTiles for Iraqi governorates + road network + satellite manifest.
+ * Manages offline PMTiles for Iraqi governorates.
  * Stored under filesDir/offline_map/
- * Supports pmtiles://file:// style for MapLibre.
+ * Supports pmtiles://file:// for MapLibre.
+ *
+ * PMTiles generation (required for offline):
+ *   - Source: OSM Geofabrik Iraq extract (https://download.geofabrik.de/asia/iraq-latest.osm.pbf) – ODbL licensed
+ *   - Tool: planetiler (https://github.com/onthegomap/planetiler) or tippecanoe
+ *   - Example: java -jar planetiler.jar --area=iraq --bounds=... --output=iraq.pmtiles --nodemap-type=sparsearray
+ *   - Governorate splits: osmium extract by bbox from Geofabrik, then planetiler per bbox
+ *   - Host: GitHub Releases (kyyr1566/NOVA-GPS-PRO/releases/download/maps-v1/<gov>.pmtiles) – free, licensed
+ *   - Verification: SHA-256 per file, sizeBytes, tested in airplane mode
  */
 object OfflineMapManager {
 
@@ -44,18 +51,45 @@ object OfflineMapManager {
         return f.exists() && f.length() > 1024
     }
 
+    fun listOfflineFiles(context: Context): List<File> {
+        val dir = offlineDir(context)
+        return dir.listFiles()?.filter { it.extension == "pmtiles" && it.length() > 1024 } ?: emptyList()
+    }
+
+    /** Returns a style JSON that uses the first available PMTiles file offline (vector). Returns null if none. */
+    fun buildOfflineStyleJson(context: Context): String? {
+        val files = listOfflineFiles(context)
+        if (files.isEmpty()) return null
+        // Prefer iraq_pmtiles combined, else first governorate
+        val f = files.firstOrNull { it.name == "iraq_pmtiles.pmtiles" } ?: files[0]
+        val pmtilesUri = "pmtiles://file://${f.absolutePath}"
+        // Load dark.json asset and replace openmaptiles URL with pmtiles
+        return try {
+            val assetJson = context.assets.open("mapstyles/dark.json").bufferedReader().readText()
+            // Replace the tiles.openfreemap URL with pmtiles URI – keep other sources
+            assetJson.replace(
+                "\"url\": \"https://tiles.openfreemap.org/planet\"",
+                "\"url\": \"$pmtilesUri\""
+            ).replace(
+                "\"url\":\"https://tiles.openfreemap.org/planet\"",
+                "\"url\":\"$pmtilesUri\""
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     fun getOfflineStyleUrl(context: Context, layer: String): String? {
-        // If we have a local PMTiles, build a local style URL
-        // MapLibre style JSON can reference pmtiles:// URIs; we keep style JSON locally but swap sources
-        val f = pmtilesFile(context, "iraq_pmtiles")
-        if (!f.exists()) return null
-        // Return pmtiles file URI to be used in style builder
-        // Caller will use this to replace tile URL
-        return "pmtiles://file://${f.absolutePath}"
+        // Legacy: if any pmtiles exists, indicate offline available
+        if (listOfflineFiles(context).isNotEmpty()) {
+            val f = listOfflineFiles(context).first()
+            return "pmtiles://file://${f.absolutePath}"
+        }
+        return null
     }
 
     fun listPackages(context: Context): List<MapPackageManifest.PackageInfo> {
-        val manifest = MapPackageManifest.load(context) ?: return emptyList()
+        val manifest = MapPackageManifest.load(context) ?: return MapPackageManifest.defaultPackages().packages
         return manifest.packages
     }
 
