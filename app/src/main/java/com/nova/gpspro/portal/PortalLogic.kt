@@ -17,10 +17,11 @@ import java.util.Locale
 
 /** Compact QR text payload (pure, JVM-testable). */
 object QrPayload {
-    const val HEADER = "NOVA GPS PRO LOCATION QR"
-    private const val HEADER_OLD = "NOVA-QR1"
+    const val HEADER = "RMG-GPS-Pro LOCATION QR"
+    private const val HEADER_OLD = "NOVA GPS PRO LOCATION QR"
+    private const val HEADER_OLD2 = "NOVA-QR1"
 
-    /** NOVA GPS PRO LOCATION QR \n lat;lon;name;notes;savedAtMs  (one line per location) */
+    /** RMG-GPS-Pro LOCATION QR \n lat;lon;name;notes;savedAtMs  (one line per location) — old NOVA headers still accepted for migration */
     fun encode(list: List<Destination>): String = buildString {
         append(HEADER)
         for (d in list) {
@@ -30,16 +31,17 @@ object QrPayload {
         }
     }
 
-    /** Only accepts NOVA GPS PRO LOCATION QR payloads (strict). Empty list = not a valid NOVA QR. */
+    /** Only accepts RMG-GPS-Pro (and old NOVA) LOCATION QR payloads (strict). Empty list = not a valid QR. */
     fun decode(text: String, now: Long, geoName: String): List<Destination> {
         val t = text.trim().removePrefix("\uFEFF")
-        // Strict: only NOVA QR headers are valid — reject geo:, http, plain text, contacts, etc.
-        val isNovaQr = t.startsWith(HEADER) || t.startsWith(HEADER_OLD)
-        if (!isNovaQr) return emptyList()
+        // Strict: only RMG/NOVA QR headers are valid — reject geo:, http, plain text, contacts, etc.
+        val isValidQr = t.startsWith(HEADER) || t.startsWith(HEADER_OLD) || t.startsWith(HEADER_OLD2)
+        if (!isValidQr) return emptyList()
         // Determine which header was used and strip it
         val payload = when {
             t.startsWith(HEADER) -> t.removePrefix(HEADER).trimStart('\n', '\r')
             t.startsWith(HEADER_OLD) -> t.removePrefix(HEADER_OLD).trimStart('\n', '\r')
+            t.startsWith(HEADER_OLD2) -> t.removePrefix(HEADER_OLD2).trimStart('\n', '\r')
             else -> return emptyList()
         }
         if (payload.isEmpty()) return emptyList()

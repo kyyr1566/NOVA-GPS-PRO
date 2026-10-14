@@ -24,7 +24,24 @@ import kotlin.math.min
  */
 class SplashView(ctx: Context, private val gps: LocationEngine, private val onFinished: () -> Unit) : FrameLayout(ctx) {
 
-    private val dial = DialView(ctx)
+    private val iconView = android.widget.ImageView(ctx).apply {
+        setImageResource(R.drawable.splash_icon)
+        scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+        adjustViewBounds = true
+        // Rounded corners + elevation for professional look, preserve aspect ratio
+        background = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = ctx.dp(32).toFloat()
+            setColor(android.graphics.Color.TRANSPARENT)
+        }
+        clipToOutline = true
+        elevation = ctx.dp(12).toFloat()
+        outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: android.view.View, outline: android.graphics.Outline) {
+                outline.setRoundRect(0, 0, view.width, view.height, ctx.dp(32).toFloat())
+            }
+        }
+    }
     private val title = ctx.text(ctx.getString(R.string.app_name), 27f, C.GOLD_DEEP, Fonts.medium).apply {
         gravity = Gravity.CENTER; letterSpacing = 0.24f
     }
@@ -46,12 +63,14 @@ class SplashView(ctx: Context, private val gps: LocationEngine, private val onFi
         isClickable = true
         background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(C.SPLASH_A, C.BG, C.SPLASH_C))
         val col = ctx.vbox().apply { gravity = Gravity.CENTER_HORIZONTAL }
-        col.addView(dial, LinearLayout.LayoutParams(ctx.dp(260), ctx.dp(260)))
+        // New RMG icon – 180dp, centered, high quality, no stretch
+        col.addView(iconView, LinearLayout.LayoutParams(ctx.dp(180), ctx.dp(180)).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        })
         col.addView(title, lp().margins(t = ctx.dp(22)))
         col.addView(underline, LinearLayout.LayoutParams(ctx.dp(90), ctx.dp(2)).margins(t = ctx.dp(8)))
         col.addView(message, lp().margins(t = ctx.dp(18)))
         addView(col, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT, Gravity.CENTER))
-        dial.dialDeg = SplashTimeline.DIAL_INTRO_OFFSET
     }
 
     fun start() {
@@ -72,7 +91,6 @@ class SplashView(ctx: Context, private val gps: LocationEngine, private val onFi
             val now = SystemClock.uptimeMillis()
             val t = now - t0
             if (t >= SplashTimeline.TOTAL_MS) { finish(); return }
-            val dt = ((now - lastFrame).coerceIn(0, 100)) / 1000f
             lastFrame = now
 
             val idx = SplashTimeline.messageIndex(t)
@@ -82,8 +100,9 @@ class SplashView(ctx: Context, private val gps: LocationEngine, private val onFi
             val sc = SplashTimeline.messageScale(t); message.scaleX = sc; message.scaleY = sc
             alpha = SplashTimeline.screenAlpha(t)
 
-            dial.dialDeg = SplashTimeline.dialStep(dial.dialDeg, SplashTimeline.dialTarget(gpsBearing), dt)
-            dial.invalidate()
+            // Subtle pulse on the new RMG icon – no old dial, preserve aspect ratio
+            val pulse = 1f + 0.025f * kotlin.math.sin(t * 0.003).toFloat()
+            iconView.scaleX = pulse; iconView.scaleY = pulse
             postOnAnimation(this)
         }
     }

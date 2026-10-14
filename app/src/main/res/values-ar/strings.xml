@@ -51,7 +51,7 @@
     <string name="grant_permission">منح الإذن</string>
     <string name="open_location_settings">تشغيل الموقع</string>
     <string name="open_app_settings">فتح إعدادات التطبيق</string>
-    <string name="permission_explain">يحتاج NOVA GPS PRO إلى موقعك لعرض الإحداثيات والسرعة وإرشادك إلى وجهاتك. موقعك لا يغادر جهازك أبدًا.</string>
+    <string name="permission_explain">يحتاج RMG-GPS-Pro إلى موقعك لعرض الإحداثيات والسرعة وإرشادك إلى وجهاتك. موقعك لا يغادر جهازك أبدًا.</string>
     <string name="permission_denied_forever">تم رفض الإذن. يرجى تفعيل الموقع من إعدادات التطبيق.</string>
 
     <string name="gps_pulse" translatable="false">📍 نبض الموقع</string>
@@ -104,7 +104,7 @@
     <string name="delete_confirm_msg">سيتم حذف «%1$s» نهائيًا.</string>
 
     <string name="share_title">مشاركة الوجهة</string>
-    <string name="share_fmt">📍 %1$s\nخط العرض: %2$s\nخط الطول: %3$s\nالإحداثيات: %2$s, %3$s\n%4$s\n— NOVA GPS PRO</string>
+    <string name="share_fmt">📍 %1$s\nخط العرض: %2$s\nخط الطول: %3$s\nالإحداثيات: %2$s, %3$s\n%4$s\n— RMG-GPS-Pro</string>
     <string name="notes_label">ملاحظات: %1$s</string>
 
     <string name="destination">الوجهة</string>
@@ -184,14 +184,14 @@
     <string name="portal_invalid_file">لم يتم العثور على مواقع صالحة في الملف</string>
     <string name="portal_qr_too_big">البيانات أكبر من سعة رمز QR واحد. اختر مواقع أقل.</string>
     <string name="portal_n_locations">%1$d مواقع</string>
-    <string name="portal_qr_hint">امسحه من NOVA GPS PRO ← البوابة ← مسح QR</string>
+    <string name="portal_qr_hint">امسحه من RMG-GPS-Pro ← البوابة ← مسح QR</string>
     <string name="portal_from_gallery">من الاستديو</string>
     <string name="portal_camera">الكاميرا</string>
     <string name="portal_camera_denied">يلزم إذن الكاميرا للمسح</string>
     <string name="portal_camera_error">تعذّر فتح الكاميرا</string>
     <string name="portal_scan_hint">وجّه الكاميرا نحو رمز QR</string>
     <string name="portal_no_qr">لم يتم العثور على رمز QR في الصورة</string>
-    <string name="portal_not_location_qr">رمز QR غير صالح\nهذا الرمز لا يحتوي على موقع NOVA GPS PRO صالح.</string>
+    <string name="portal_not_location_qr">رمز QR غير صالح\nهذا الرمز لا يحتوي على موقع RMG-GPS-Pro صالح.</string>
     <string name="portal_qr_location">موقع QR</string>
     <string name="portal_nothing_new">لا يوجد جديد</string>
     <string name="portal_all_duplicates_fmt">جميع المواقع (%1$d) موجودة مسبقًا في الوجهات.</string>
@@ -206,10 +206,10 @@
     <string name="portal_qr_ignored_fmt">تم تجاهل %1$d مواقع مكررة</string>
     <string name="portal_qr_all_duplicates_title">المواقع موجودة مسبقًا</string>
     <string name="portal_qr_invalid_title">رمز QR غير صالح</string>
-    <string name="portal_qr_invalid_desc">هذا الرمز لا يحتوي على موقع NOVA GPS PRO صالح.</string>
+    <string name="portal_qr_invalid_desc">هذا الرمز لا يحتوي على موقع RMG-GPS-Pro صالح.</string>
 
     <string name="activation_eyebrow">تفعيل لمرة واحدة</string>
-    <string name="activation_title">تفعيل NOVA GPS PRO</string>
+    <string name="activation_title">تفعيل RMG-GPS-Pro</string>
     <string name="activation_subtitle">أدخل رمز الترخيص لفتح جميع مزايا نظام GPS.</string>
     <string name="activation_code_label">رمز الترخيص</string>
     <string name="activation_code_hint">أدخل رمز الترخيص</string>
@@ -225,7 +225,7 @@
     <string name="activation_error_expired">انتهت صلاحية هذا الترخيص. يرجى استخدام رمز ترخيص جديد.</string>
     <string name="activation_error_network">تعذّر الاتصال. تحقّق من اتصال الإنترنت ثم حاول مجددًا.</string>
     <string name="activation_error_server">حدثت مشكلة مؤقتة في الخادم. حاول مجددًا بعد قليل.</string>
-    <string name="activation_success">تم تفعيل الترخيص. أهلًا بك في NOVA GPS PRO.</string>
+    <string name="activation_success">تم تفعيل الترخيص. أهلًا بك في RMG-GPS-Pro.</string>
     <string name="map_start_navigation">بدء الملاحة</string>
     <string name="maps">الخرائط</string>
     <string name="navigate_on_map">الملاحة على الخريطة</string>

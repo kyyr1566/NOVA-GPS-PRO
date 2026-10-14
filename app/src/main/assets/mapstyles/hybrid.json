@@ -1,8 +1,8 @@
 {
   "version": 8,
-  "name": "NOVA Hybrid Satellite",
+  "name": "RMG Hybrid HD",
   "metadata": {
-    "maplibre:attribution": "© Esri, Maxar © OpenStreetMap © OpenFreeMap"
+    "maplibre:attribution": "© Esri, Maxar, Earthstar © OpenStreetMap © OpenFreeMap — Clarity HD"
   },
   "sources": {
     "openmaptiles": {
@@ -13,11 +13,14 @@
     "esri-satellite": {
       "type": "raster",
       "tiles": [
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        "https://clarity.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        "https://services.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
       ],
       "tileSize": 256,
-      "attribution": "© Esri, Maxar, Earthstar Geographics",
-      "maxzoom": 19
+      "attribution": "© Esri, Maxar, Earthstar Geographics — Clarity HD",
+      "maxzoom": 19,
+      "minzoom": 0
     }
   },
   "sprite": "https://tiles.openfreemap.org/styles/liberty/sprite",
@@ -35,7 +38,9 @@
       "type": "raster",
       "source": "esri-satellite",
       "paint": {
-        "raster-opacity": 1
+        "raster-opacity": 1,
+        "raster-resampling": "linear",
+        "raster-fade-duration": 0
       }
     },
     {

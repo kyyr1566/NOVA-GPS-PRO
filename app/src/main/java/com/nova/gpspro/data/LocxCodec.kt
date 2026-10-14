@@ -21,7 +21,8 @@ import java.util.TimeZone
  * Values are escaped (\\ \n \r) so any text survives a round trip.
  */
 object LocxCodec {
-    const val HEADER = "NOVA-LOCX 1"
+    const val HEADER = "RMG-LOCX 1"
+    const val HEADER_OLD = "NOVA-LOCX 1"
     const val EXT = ".locx"
     const val FOLDER = "GPSarrow"
     private const val MAX_BASE = 80
@@ -40,10 +41,11 @@ object LocxCodec {
 
     private fun StringBuilder.kv(k: String, v: String) { append(k).append('=').append(esc(v)).append('\n') }
 
-    /** Returns null if the text is not a valid .locx document. [fallbackId] is used when no id line exists. */
+    /** Returns null if the text is not a valid .locx document. [fallbackId] is used when no id line exists. — accepts RMG and old NOVA */
     fun decode(text: String, fallbackId: String, fallbackTime: Long = 0L): Destination? {
         val lines = text.removePrefix("\uFEFF").split('\n').map { it.trimEnd('\r') }
-        if (lines.firstOrNull()?.trim()?.startsWith("NOVA-LOCX") != true) return null
+        val first = lines.firstOrNull()?.trim() ?: return null
+        if (!first.startsWith("RMG-LOCX") && !first.startsWith("NOVA-LOCX")) return null
         val m = HashMap<String, String>()
         for (l in lines.drop(1)) {
             val i = l.indexOf('='); if (i <= 0) continue
@@ -69,11 +71,12 @@ object LocxCodec {
     fun encodeMany(list: List<Destination>, tz: TimeZone = TimeZone.getDefault()): String =
         list.joinToString("") { encode(it, tz) }
 
-    /** Decodes every record of a single- or multi-location .locx. Invalid records are skipped. */
+    /** Decodes every record of a single- or multi-location .locx. Invalid records are skipped. — accepts RMG and old NOVA */
     fun decodeAll(text: String, fallbackPrefix: String = "imp_", fallbackTime: Long = 0L): List<Destination> {
         val blocks = ArrayList<StringBuilder>()
         for (line in text.removePrefix("\uFEFF").split('\n')) {
-            if (line.trim().startsWith("NOVA-LOCX")) blocks.add(StringBuilder())
+            val t = line.trim()
+            if (t.startsWith("RMG-LOCX") || t.startsWith("NOVA-LOCX")) blocks.add(StringBuilder())
             blocks.lastOrNull()?.append(line)?.append('\n')
         }
         return blocks.mapIndexedNotNull { i, b -> decode(b.toString(), fallbackPrefix + i, fallbackTime) }

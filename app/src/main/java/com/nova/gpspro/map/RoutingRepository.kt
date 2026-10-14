@@ -104,7 +104,7 @@ class RoutingRepository(private val context: Context) {
             conn.requestMethod = "GET"
             conn.connectTimeout = 6000
             conn.readTimeout = 6000
-            conn.setRequestProperty("User-Agent", "NOVA-GPS-PRO/1.0 (OSM)")
+            conn.setRequestProperty("User-Agent", "RMG-GPS-Pro/1.0 (OSM)")
             if (conn.responseCode != 200) return@withContext null
             val body = conn.inputStream.bufferedReader().readText()
             val json = JSONObject(body)
@@ -129,7 +129,7 @@ class RoutingRepository(private val context: Context) {
             conn.requestMethod = "GET"
             conn.connectTimeout = 8000
             conn.readTimeout = 8000
-            conn.setRequestProperty("User-Agent", "NOVA-GPS-PRO/1.0 (OSM)")
+            conn.setRequestProperty("User-Agent", "RMG-GPS-Pro/1.0 (OSM)")
             if (conn.responseCode != 200) return null
             val body = conn.inputStream.bufferedReader().readText()
             parseOsrm(body)
@@ -143,7 +143,7 @@ class RoutingRepository(private val context: Context) {
             conn.requestMethod = "GET"
             conn.connectTimeout = 8000
             conn.readTimeout = 8000
-            conn.setRequestProperty("User-Agent", "NOVA-GPS-PRO/1.0 (OSM)")
+            conn.setRequestProperty("User-Agent", "RMG-GPS-Pro/1.0 (OSM)")
             if (conn.responseCode != 200) return null
             val body = conn.inputStream.bufferedReader().readText()
             parseOsrm(body)
@@ -161,7 +161,7 @@ class RoutingRepository(private val context: Context) {
             conn.requestMethod = "POST"
             conn.connectTimeout = 9000
             conn.readTimeout = 9000
-            conn.setRequestProperty("User-Agent", "NOVA-GPS-PRO/1.0 (OSM)")
+            conn.setRequestProperty("User-Agent", "RMG-GPS-Pro/1.0 (OSM)")
             conn.setRequestProperty("Content-Type", "application/json")
             conn.doOutput = true
             conn.outputStream.use { it.write(jsonBody.toByteArray()) }

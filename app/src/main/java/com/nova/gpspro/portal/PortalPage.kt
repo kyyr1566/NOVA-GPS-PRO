@@ -34,7 +34,7 @@ class PortalPage(act: MainActivity) : Page(act) {
     override val view: View = run {
         val col = c.vbox().apply { setPadding(c.dp(20), c.dp(18), c.dp(20), c.dp(24)) }
         col.addView(c.text(c.getString(R.string.portal_title), 24f, C.TEXT, Fonts.medium))
-        col.addView(c.text("NOVA PORTAL", 12f, C.GOLD, Fonts.medium).apply { letterSpacing = 0.32f }, lp().margins(t = c.dp(2)))
+        col.addView(c.text("RMG PORTAL", 12f, C.GOLD, Fonts.medium).apply { letterSpacing = 0.32f }, lp().margins(t = c.dp(2)))
         col.addView(View(c).apply { background = gradientRect(C.GOLD, C.GOLD_LIGHT, c.dp(2).toFloat()) },
             LinearLayout.LayoutParams(c.dp(44), c.dp(3)).margins(t = c.dp(10), b = c.dp(22)))
 

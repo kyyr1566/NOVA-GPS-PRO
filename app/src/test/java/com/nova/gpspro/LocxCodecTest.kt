@@ -12,9 +12,11 @@ class LocxCodecTest {
 
     @Test fun roundTrip() {
         val txt = LocxCodec.encode(d, TimeZone.getTimeZone("Asia/Baghdad"))
-        assertTrue(txt.startsWith("NOVA-LOCX 1\n"))
+        assertTrue(txt.startsWith("RMG-LOCX 1\n") || txt.startsWith("NOVA-LOCX 1\n"))
         assertTrue(txt.contains("latitude=32.0258341")); assertTrue(txt.contains("saved_at=2026-"))
         assertEquals(d, LocxCodec.decode(txt, "x"))
+        // backward compat: old NOVA header still decodes
+        assertNotNull(LocxCodec.decode(txt.replace("RMG-LOCX", "NOVA-LOCX"), "x"))
     }
     @Test fun rejectsInvalid() {
         assertNull(LocxCodec.decode("hello", "x"))
