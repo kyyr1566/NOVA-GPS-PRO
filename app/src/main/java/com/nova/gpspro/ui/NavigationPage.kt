@@ -69,15 +69,25 @@ class NavigationPage(act: MainActivity) : Page(act) {
             isClickable = true; isFocusable = true
             contentDescription = "الخرائط"
             setOnClickListener {
-                val dest = act.app.navigation.state.destination
-                val intent = android.content.Intent(c, com.nova.gpspro.map.MapActivity::class.java)
-                if (dest != null) {
-                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_ID, dest.id)
-                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LAT, dest.latitude)
-                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LON, dest.longitude)
-                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_NAME, dest.name)
+                try {
+                    val dest = act.app.navigation.state.destination
+                    val intent = android.content.Intent(c, com.nova.gpspro.map.MapActivity::class.java)
+                    if (dest != null) {
+                        intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_ID, dest.id)
+                        intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LAT, dest.latitude)
+                        intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LON, dest.longitude)
+                        intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_NAME, dest.name)
+                    }
+                    c.startActivity(intent)
+                } catch (e: Exception) {
+                    android.util.Log.e("NOVA_MAP", "start MapActivity failed", e)
+                    try { c.message.error("تعذر فتح الخرائط: ${e.message}") } catch (_: Exception) {
+                        android.widget.Toast.makeText(c, "تعذر فتح الخرائط", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                } catch (e: Error) {
+                    android.util.Log.e("NOVA_MAP", "start MapActivity native error", e)
+                    android.widget.Toast.makeText(c, "تعذر فتح الخرائط (خطأ أصلي)", android.widget.Toast.LENGTH_LONG).show()
                 }
-                c.startActivity(intent)
             }
         }
         topRow.addView(mapBtn, LinearLayout.LayoutParams(c.dp(110), c.dp(48)))

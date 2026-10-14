@@ -6,7 +6,7 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import com.nova.gpspro.NovaApp
 import com.nova.gpspro.R
@@ -25,7 +25,7 @@ import org.maplibre.android.maps.Style
  * Professional Map Screen — MapLibre Native, offline PMTiles, vector, 3D, routing.
  * Keeps original arrow navigation untouched (separate system).
  */
-class MapActivity : AppCompatActivity() {
+class MapActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_DEST_ID = "dest_id"
@@ -56,7 +56,16 @@ class MapActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        MapLibre.getInstance(this)
+        try {
+            MapLibre.getInstance(this)
+        } catch (e: Exception) {
+            // MapLibre already initialized or failed — continue, MapView will handle
+            android.util.Log.e("NOVA_MAP", "MapLibre init failed", e)
+        } catch (e: Error) {
+            android.util.Log.e("NOVA_MAP", "MapLibre native init failed", e)
+            showMapError("تعذر تهيئة محرك الخرائط")
+            return
+        }
 
         // Restore destination from intent
         val destId = intent.getStringExtra(EXTRA_DEST_ID)
@@ -86,7 +95,17 @@ class MapActivity : AppCompatActivity() {
         }
 
         val root = FrameLayout(this)
-        mapView = MapView(this)
+        try {
+            mapView = MapView(this)
+        } catch (e: Exception) {
+            android.util.Log.e("NOVA_MAP", "MapView creation failed", e)
+            showMapError("تعذر إنشاء الخريطة")
+            return
+        } catch (e: Error) {
+            android.util.Log.e("NOVA_MAP", "MapView native error", e)
+            showMapError("تعذر تحميل الخرائط (خطأ أصلي)")
+            return
+        }
         root.addView(mapView, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
 
@@ -103,55 +122,86 @@ class MapActivity : AppCompatActivity() {
                 if (route != null) {
                     distanceView.text = formatDistance(route.distanceMeters)
                     etaView.text = formatDuration(route.durationSeconds)
-                    // speed comes from location; show —
                     bottomBar.visibility = View.VISIBLE
                 }
             }
         }
+        navigationSession?.onError = { msg ->
+            runOnUiThread { android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show() }
+        }
 
-        mapView.onCreate(savedInstanceState)
-        mapView.getMapAsync { mapLibreMap ->
-            map = mapLibreMap
-            cameraController.attach(mapLibreMap)
-            setupMap(mapLibreMap)
-            // attach navigation session after map ready
-            navigationSession?.attach(mapLibreMap)
-            pendingPreviewLat?.let { lat ->
-                pendingPreviewLon?.let { lon ->
-                    val name = pendingPreviewName
-                    if (targetDestination != null) navigationSession?.previewDestination(targetDestination!!)
-                    else navigationSession?.previewLatLng(lat, lon, name)
-                    // move camera to destination
-                    val pos = CameraPosition.Builder().target(LatLng(lat, lon)).zoom(15.0).build()
-                    mapLibreMap.animateCamera(CameraUpdateFactory.newCameraPosition(pos), 600)
-                    // request route from current location
-                    lifecycleScope.launch {
-                        val loc = locationController.lastLocation() ?: locationController.awaitFreshLocation()
-                        if (loc != null) navigationSession?.requestRoute(loc.latitude, loc.longitude)
+        try {
+            mapView.onCreate(savedInstanceState)
+        } catch (e: Exception) {
+            android.util.Log.e("NOVA_MAP", "MapView onCreate failed", e)
+            showMapError("تعذر تهيئة الخريطة")
+            return
+        }
+        try {
+            mapView.getMapAsync { mapLibreMap ->
+                try {
+                    map = mapLibreMap
+                    cameraController.attach(mapLibreMap)
+                    setupMap(mapLibreMap)
+                    navigationSession?.attach(mapLibreMap)
+                    pendingPreviewLat?.let { lat ->
+                        pendingPreviewLon?.let { lon ->
+                            val name = pendingPreviewName
+                            if (targetDestination != null) navigationSession?.previewDestination(targetDestination!!)
+                            else navigationSession?.previewLatLng(lat, lon, name)
+                            val pos = CameraPosition.Builder().target(LatLng(lat, lon)).zoom(15.0).build()
+                            mapLibreMap.animateCamera(CameraUpdateFactory.newCameraPosition(pos), 600)
+                            lifecycleScope.launch {
+                                try {
+                                    val loc = locationController.lastLocation() ?: locationController.awaitFreshLocation()
+                                    if (loc != null) navigationSession?.requestRoute(loc.latitude, loc.longitude)
+                                } catch (_: Exception) {}
+                            }
+                        }
                     }
+                } catch (e: Exception) {
+                    android.util.Log.e("NOVA_MAP", "Map ready failed", e)
                 }
             }
+        } catch (e: Exception) {
+            android.util.Log.e("NOVA_MAP", "getMapAsync failed", e)
+            showMapError("تعذر تحميل الخريطة")
+            return
         }
 
         setupUi(root)
     }
 
     private fun setupMap(map: MapLibreMap) {
-        map.uiSettings.isRotateGesturesEnabled = true
-        map.uiSettings.isTiltGesturesEnabled = true
-        map.uiSettings.isZoomGesturesEnabled = true
-        map.uiSettings.isScrollGesturesEnabled = true
-        map.uiSettings.isDoubleTapGesturesEnabled = true
+        try { map.uiSettings.isRotateGesturesEnabled = true } catch (_: Exception) {}
+        try { map.uiSettings.isTiltGesturesEnabled = true } catch (_: Exception) {}
+        try { map.uiSettings.isZoomGesturesEnabled = true } catch (_: Exception) {}
+        try { map.uiSettings.isScrollGesturesEnabled = true } catch (_: Exception) {}
+        try { map.uiSettings.isDoubleTapGesturesEnabled = true } catch (_: Exception) {}
 
-        val styleUrl = styleManager.currentStyleUrl()
-        // If offline pmtiles url, we still load base style and let pmtiles source override
+        val styleUrl = try { styleManager.currentStyleUrl() } catch (_: Exception) { "asset://mapstyles/dark.json" }
         val effectiveStyle = if (styleUrl.startsWith("pmtiles://")) "asset://mapstyles/dark.json" else styleUrl
-        map.setStyle(Style.Builder().fromUri(effectiveStyle)) { style ->
-            styleManager.applyStyle(style, map)
-            savedRepo.attach(map)
-            targetDestination?.let { dest ->
-                savedRepo.highlight(dest.id)
-                // Ensure marker visible even if highlight overrides
+        try {
+            val builder = Style.Builder().fromUri(effectiveStyle)
+            map.setStyle(builder, object : Style.OnStyleLoaded {
+                override fun onStyleLoaded(style: Style) {
+                    try {
+                        styleManager.applyStyle(style, map)
+                        savedRepo.attach(map)
+                        targetDestination?.let { dest -> savedRepo.highlight(dest.id) }
+                    } catch (e: Exception) { android.util.Log.e("NOVA_MAP", "style apply failed", e) }
+                }
+            })
+        } catch (e: Exception) {
+            android.util.Log.e("NOVA_MAP", "setStyle failed: $effectiveStyle", e)
+            // Fallback to minimal dark background so app does not crash
+            try {
+                val fallback = Style.Builder().fromJson("{\"version\":8,\"sources\":{},\"layers\":[{\"id\":\"background\",\"type\":\"background\",\"paint\":{\"background-color\":\"#0B1220\"}}]}")
+                map.setStyle(fallback) { style ->
+                    try { savedRepo.attach(map) } catch (_: Exception) {}
+                }
+            } catch (_: Exception) {
+                android.widget.Toast.makeText(this, "تعذر تحميل طبقة الخريطة — تحقق من الاتصال", android.widget.Toast.LENGTH_LONG).show()
             }
         }
 
@@ -560,15 +610,53 @@ class MapActivity : AppCompatActivity() {
         return String.format("%.0f كم/س", kmh)
     }
 
+    private fun showMapError(msg: String) {
+        try {
+            android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show()
+        } catch (_: Exception) {}
+        // Fallback UI so app does not show blank/black screen
+        try {
+            val fallback = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(dp(24), dp(24), dp(24), dp(24))
+                setBackgroundColor(0xFF0B1220.toInt())
+            }
+            fallback.addView(TextView(this).apply {
+                text = msg
+                setTextColor(0xFFFAF7F0.toInt())
+                textSize = 16f
+                gravity = Gravity.CENTER
+            })
+            fallback.addView(TextView(this).apply {
+                text = "إغلاق"
+                setTextColor(android.graphics.Color.WHITE)
+                textSize = 14f
+                gravity = Gravity.CENTER
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                    cornerRadius = dp(10).toFloat()
+                    setColor(C.PRIMARY_A)
+                }
+                setPadding(dp(16), dp(10), dp(16), dp(10))
+                setOnClickListener { finish() }
+                layoutParams = LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, dp(24), 0, 0) }
+            })
+            setContentView(fallback)
+        } catch (_: Exception) {
+            try { finish() } catch (_: Exception) {}
+        }
+    }
+
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
-    override fun onStart() { super.onStart(); mapView.onStart() }
-    override fun onResume() { super.onResume(); mapView.onResume() }
-    override fun onPause() { super.onPause(); mapView.onPause() }
-    override fun onStop() { super.onStop(); mapView.onStop() }
-    override fun onLowMemory() { super.onLowMemory(); mapView.onLowMemory() }
-    override fun onDestroy() { super.onDestroy(); mapView.onDestroy(); navigationSession?.detach() }
-    override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); mapView.onSaveInstanceState(outState) }
+    override fun onStart() { super.onStart(); if (::mapView.isInitialized) try { mapView.onStart() } catch (_: Exception) {} }
+    override fun onResume() { super.onResume(); if (::mapView.isInitialized) try { mapView.onResume() } catch (_: Exception) {} }
+    override fun onPause() { if (::mapView.isInitialized) try { mapView.onPause() } catch (_: Exception) {}; super.onPause() }
+    override fun onStop() { if (::mapView.isInitialized) try { mapView.onStop() } catch (_: Exception) {}; super.onStop() }
+    override fun onLowMemory() { super.onLowMemory(); if (::mapView.isInitialized) try { mapView.onLowMemory() } catch (_: Exception) {} }
+    override fun onDestroy() { if (::mapView.isInitialized) try { mapView.onDestroy() } catch (_: Exception) {}; try { navigationSession?.detach() } catch (_: Exception) {}; super.onDestroy() }
+    override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); if (::mapView.isInitialized) try { mapView.onSaveInstanceState(outState) } catch (_: Exception) {} }
 }
 
 

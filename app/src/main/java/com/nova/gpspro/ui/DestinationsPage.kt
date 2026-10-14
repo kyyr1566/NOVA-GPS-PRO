@@ -137,12 +137,22 @@ class DestinationsPage(act: MainActivity) : Page(act) {
                 setPadding(c.dp(16), c.dp(14), c.dp(16), c.dp(14))
                 setOnClickListener {
                     dlg.dismiss()
-                    val intent = android.content.Intent(c, com.nova.gpspro.map.MapActivity::class.java)
-                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_ID, d.id)
-                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LAT, d.latitude)
-                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LON, d.longitude)
-                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_NAME, d.name)
-                    c.startActivity(intent)
+                    try {
+                        val intent = android.content.Intent(c, com.nova.gpspro.map.MapActivity::class.java)
+                        intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_ID, d.id)
+                        intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LAT, d.latitude)
+                        intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LON, d.longitude)
+                        intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_NAME, d.name)
+                        c.startActivity(intent)
+                    } catch (e: Exception) {
+                        android.util.Log.e("NOVA_MAP", "start MapActivity failed", e)
+                        try { c.message.error("تعذر فتح الخرائط: ${e.message}") } catch (_: Exception) {
+                            android.widget.Toast.makeText(c, "تعذر فتح الخرائط", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (e: Error) {
+                        android.util.Log.e("NOVA_MAP", "start MapActivity native error", e)
+                        android.widget.Toast.makeText(c, "تعذر فتح الخرائط (خطأ أصلي)", android.widget.Toast.LENGTH_LONG).show()
+                    }
                 }
             }
             box.addView(t, lp().margins(b = c.dp(8)))

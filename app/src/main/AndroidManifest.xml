@@ -34,6 +34,8 @@
         <activity
             android:name=".map.MapActivity"
             android:exported="false"
+            android:theme="@style/Theme.Nova"
+            android:hardwareAccelerated="true"
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density" />
         <provider
