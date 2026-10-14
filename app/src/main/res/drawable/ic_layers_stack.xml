@@ -1,0 +1,8 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp" android:viewportWidth="24" android:viewportHeight="24">
+    <!-- Stacked layers: 3 rectangles offset -->
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="1.7" android:strokeLineJoin="round" android:pathData="M3,8 L12,3 L21,8 L12,13 Z"/>
+    <path android:fillColor="#FFFFFF" android:strokeColor="#FFFFFF" android:strokeWidth="1.2" android:pathData="M3,8 L12,13 L21,8 L12,3 Z" android:fillAlpha="0.25"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="1.7" android:strokeLineJoin="round" android:pathData="M3,12 L12,7 L21,12 L12,17 Z"/>
+    <path android:fillColor="#00000000" android:strokeColor="#FFFFFF" android:strokeWidth="1.7" android:strokeLineJoin="round" android:pathData="M3,16 L12,11 L21,16 L12,21 Z"/>
+</vector>

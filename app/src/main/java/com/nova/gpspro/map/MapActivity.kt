@@ -28,9 +28,9 @@ import org.maplibre.android.style.sources.GeoJsonSource
 import kotlin.math.*
 
 /**
- * Professional Map Screen — MapLibre Native, online vector/raster, 8 layers, 3D, real routing.
+ * Professional Map Screen — MapLibre Native, online vector/raster, 3 layers (light/dark/satellite HD), 3D, real routing.
  * Keeps original arrow navigation untouched (separate system).
- * Online only: no download, 8 real layers, blue tools on right, instant switch, real navigation camera.
+ * Online only: no download, 3 layers, blue distinct tools on right, search in top bar, instant switch, real navigation camera.
  */
 class MapActivity : ComponentActivity() {
 
@@ -226,10 +226,9 @@ class MapActivity : ComponentActivity() {
 
         val styleUrl = try { styleManager.currentStyleUrl() } catch (_: Exception) { "asset://mapstyles/dark.json" }
         val effectiveStyle = if (styleUrl.startsWith("pmtiles://")) "asset://mapstyles/dark.json" else styleUrl
-        // Prevent excessive digital zoom for raster layers (satellite blur, "Map data not yet available")
+        // Prevent excessive digital zoom for satellite (blur, "Map data not yet available") – 3 layers only
         val initialMaxZ = when {
-            effectiveStyle.contains("satellite") || effectiveStyle.contains("hybrid") -> 19.0
-            effectiveStyle.contains("topo") -> 17.0
+            effectiveStyle.contains("satellite") -> 19.0
             else -> 20.0
         }
         try { map.setMaxZoomPreference(initialMaxZ) } catch (_: Exception) {}
@@ -317,17 +316,19 @@ class MapActivity : ComponentActivity() {
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         }
         centerCol.addView(labelView); centerCol.addView(destNameView)
-        val closeBtn = TextView(this).apply {
-            text = "×"; contentDescription = "إغلاق / إلغاء الوجهة"; gravity = Gravity.CENTER
-            setTextColor(0xFF6B7280.toInt()); textSize = 20f
+        // Search button – clean professional, replaces the old circular × on the right
+        val searchBtn = TextView(this).apply {
+            text = "🔎"; contentDescription = "بحث"; gravity = Gravity.CENTER
+            setTextColor(android.graphics.Color.WHITE); textSize = 16f
             background = android.graphics.drawable.GradientDrawable().apply {
-                shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFF0F1F5.toInt())
+                shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(C.PRIMARY_A)
             }
-            setOnClickListener { clearPreview() }
+            elevation = dp(2).toFloat()
+            setOnClickListener { showMapSearchDialog() }
         }
         topPill.addView(backBtn, LinearLayout.LayoutParams(dp(32), dp(32)))
         topPill.addView(centerCol, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(8), 0, dp(8), 0) })
-        topPill.addView(closeBtn, LinearLayout.LayoutParams(dp(32), dp(32)))
+        topPill.addView(searchBtn, LinearLayout.LayoutParams(dp(36), dp(36)))
         val topParams = FrameLayout.LayoutParams(-1, -2).apply {
             gravity = Gravity.TOP
             setMargins(dp(12), dp(14), dp(12), 0)
@@ -341,20 +342,21 @@ class MapActivity : ComponentActivity() {
             // Force LTR to keep buttons on physical right in RTL (Arabic) – otherwise END flips to left
             layoutDirection = View.LAYOUT_DIRECTION_LTR
         }
-        // 6 tools on right – vertical, circular NOVA blue, white icons, bigger (48dp visual / 56dp touch), uniform spacing
-        val layersBtn = smallIconButton("⬢", "الطبقات") { showLayersSheet() }
-        val compassBtn = smallIconButton("◉", "البوصلة") { map?.let { cameraController.bearingNorth(it) } }
-        val myLocBtn = smallIconButton("◎", "موقعي") { centerToMyLocation() }
-        val threeDBtn = smallIconButton("3D", "2D/3D") { toggle3D() }
+        // 6 tools on right – professional, distinct icons, bigger, well spaced – no visual repetition
+        val layersBtn = vectorIconButton(R.drawable.ic_layers_stack, "الطبقات") { showLayersSheet() }
+        val compassBtn = vectorIconButton(R.drawable.ic_compass_north, "البوصلة") { map?.let { cameraController.bearingNorth(it) } }
+        val myLocBtn = vectorIconButton(R.drawable.ic_my_location, "موقعي الحالي") { centerToMyLocation() }
+        val threeDBtn = vectorIconButton(R.drawable.ic_cube_3d, "3D") { toggle3D() }
         val zoomInBtn = smallIconButton("+", "تكبير") { map?.animateCamera(CameraUpdateFactory.zoomIn()) }
         val zoomOutBtn = smallIconButton("−", "تصغير") { map?.animateCamera(CameraUpdateFactory.zoomOut()) }
-        // Order: zoomIn, zoomOut, myLoc, compass, layers, 3D – organized vertical on right, uniform 6dp gaps
+        // Order: zoomIn, zoomOut, myLoc, compass, layers, 3D – distinct, not crowded, 8dp gaps, 52dp visual / 60dp touch
         listOf(zoomInBtn, zoomOutBtn, myLocBtn, compassBtn, layersBtn, threeDBtn).forEach { btn ->
             val wrapper = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(56), dp(56)).apply { setMargins(0, dp(3), 0, dp(3)) }
+                layoutParams = LinearLayout.LayoutParams(dp(60), dp(60)).apply { setMargins(0, dp(4), 0, dp(4)) }
                 isClickable = false
             }
-            wrapper.addView(btn, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER))
+            // zoom buttons slightly rectangular for distinction, others circular – all blue identity
+            wrapper.addView(btn, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.CENTER))
             wrapper.setOnClickListener { btn.performClick() }
             sideCol.addView(wrapper)
         }
@@ -615,14 +617,14 @@ class MapActivity : ComponentActivity() {
             this.contentDescription = desc
             gravity = Gravity.CENTER
             setTextColor(android.graphics.Color.WHITE)
-            textSize = 16f // bigger white icon
+            textSize = 18f // larger, clearer
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(C.PRIMARY_A) // NOVA blue #2856BC
+                setColor(C.PRIMARY_A) // RMG blue #2856BC
                 setStroke(dp(1), 0xFF1E3A5F.toInt())
             }
-            elevation = dp(4).toFloat()
+            elevation = dp(5).toFloat()
             // Ripple for professional feel
             try {
                 val ripple = android.graphics.drawable.RippleDrawable(
@@ -633,6 +635,35 @@ class MapActivity : ComponentActivity() {
             } catch (_: Exception) {}
             setOnClickListener { onClick() }
         }
+    }
+
+    private fun vectorIconButton(iconRes: Int, desc: String, onClick: () -> Unit): View {
+        val container = FrameLayout(this).apply {
+            contentDescription = desc
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(C.PRIMARY_A)
+                setStroke(dp(1), 0xFF1E3A5F.toInt())
+            }
+            elevation = dp(5).toFloat()
+            isClickable = true; isFocusable = true
+            try {
+                val ripple = android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf(0x33FFFFFF),
+                    background, null
+                )
+                background = ripple
+            } catch (_: Exception) {}
+            setOnClickListener { onClick() }
+        }
+        val iv = android.widget.ImageView(this).apply {
+            setImageResource(iconRes)
+            setColorFilter(android.graphics.Color.WHITE)
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            // Ensure crisp white icon
+        }
+        container.addView(iv, FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER))
+        return container
     }
 
     private fun centerToMyLocation() {
@@ -662,15 +693,14 @@ class MapActivity : ComponentActivity() {
     }
 
     private fun cycleLayers() {
-        // Kept for internal use – not used by UI directly (UI now uses chooser)
+        // Kept for internal use – not used by UI directly (UI now uses chooser) – 3 layers only
         val next = styleManager.nextLayer(currentLayerKey)
         currentLayerKey = next
         styleManager.setLayer(next)
         val cam = map?.cameraPosition
         val url = styleManager.currentStyleUrl()
         val maxZ = when (next) {
-            "satellite", "hybrid" -> 19.0
-            "topo" -> 17.0
+            "satellite" -> 19.0
             else -> 20.0
         }
         try { map?.setMaxZoomPreference(maxZ) } catch (_: Exception) {}
@@ -734,10 +764,9 @@ class MapActivity : ComponentActivity() {
                     styleManager.setLayer(key)
                     val cam = map?.cameraPosition
                     val url = styleManager.currentStyleUrl()
-                    // Apply maxZoom limit per style to prevent over-zoom blur for raster
+                    // Apply maxZoom limit per style to prevent over-zoom blur – 3 layers only
                     val maxZ = when (key) {
-                        "satellite", "hybrid" -> 19.0
-                        "topo" -> 17.0
+                        "satellite" -> 19.0
                         else -> 20.0
                     }
                     try { map?.setMaxZoomPreference(maxZ) } catch (_: Exception) {}
@@ -765,14 +794,81 @@ class MapActivity : ComponentActivity() {
             text = "وضع العرض: ${if (styleManager.is3DEnabled) "ثلاثي الأبعاد 3D" else "ثنائي الأبعاد 2D"} (زر 3D منفصل)"
             setTextColor(C.TEXT2); textSize = 12f; gravity = Gravity.CENTER
         })
-        val dlg = com.nova.gpspro.ui.NovaDialog(this).title("الطبقات").content(sheet).button("إغلاق", C.TEXT2) { it.dismiss() }
+        val dlg = com.nova.gpspro.ui.NovaDialog(this).title("الطبقات (3 طبقات)").content(sheet).button("إغلاق", C.TEXT2) { it.dismiss() }
         sheet.tag = dlg
         dlg.show()
     }
 
+    private fun showMapSearchDialog() {
+        try {
+            val all = (application as NovaApp).destinations.all()
+            if (all.isEmpty()) {
+                android.widget.Toast.makeText(this, "لا توجد وجهات محفوظة للبحث", android.widget.Toast.LENGTH_SHORT).show()
+                return
+            }
+            val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(16)) }
+            box.addView(TextView(this).apply { text = "بحث في الوجهات"; setTextColor(C.TEXT); textSize = 14f; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL); gravity = Gravity.CENTER; setPadding(0,0,0,dp(10)) })
+            val input = android.widget.EditText(this).apply {
+                hint = "اكتب اسم الوجهة..."
+                setHintTextColor(0xFF9AA1AF.toInt()); setTextColor(C.TEXT); textSize = 14f
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(12).toFloat(); setColor(0xFFF6F7F9.toInt()); setStroke(dp(1), 0xFFE5E7EB.toInt()) }
+                setPadding(dp(14), dp(10), dp(14), dp(10))
+                isSingleLine = true
+            }
+            box.addView(input, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0,0,0,dp(12)) })
+            val listCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            val scroll = android.widget.ScrollView(this).apply {
+                addView(listCol, LinearLayout.LayoutParams(-1, -2))
+                layoutParams = LinearLayout.LayoutParams(-1, dp(220))
+            }
+            box.addView(scroll)
+            fun refresh(filter: String) {
+                listCol.removeAllViews()
+                val q = filter.trim().lowercase()
+                val filtered = if (q.isEmpty()) all.take(12) else all.filter { it.name.lowercase().contains(q) || (it.notes?.lowercase()?.contains(q) == true) }.take(12)
+                if (filtered.isEmpty()) {
+                    listCol.addView(TextView(this).apply { text = "لا نتائج"; setTextColor(C.TEXT2); textSize = 13f; gravity = Gravity.CENTER; setPadding(0, dp(12),0,dp(12)) })
+                } else filtered.forEach { d ->
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                        setPadding(dp(12), dp(12), dp(12), dp(12))
+                        background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(10).toFloat(); setColor(0xFFFFFFFF.toInt()); setStroke(dp(1), 0xFFE5E7EB.toInt()) }
+                        isClickable = true; isFocusable = true
+                    }
+                    val icon = TextView(this).apply { text = "📍"; textSize = 16f; setPadding(0,0,dp(10),0) }
+                    val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0,-2,1f) }
+                    col.addView(TextView(this).apply { text = d.name; setTextColor(C.TEXT); textSize = 14f; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+                    col.addView(TextView(this).apply { text = String.format("%.4f, %.4f", d.latitude, d.longitude); setTextColor(C.TEXT2); textSize = 11f })
+                    row.addView(icon); row.addView(col)
+                    row.setOnClickListener {
+                        try { (box.tag as? com.nova.gpspro.ui.NovaDialog)?.dismiss() } catch (_: Exception) {}
+                        // Select destination and show on map
+                        targetDestination = d
+                        destNameView.text = d.name
+                        destNameView.setTextColor(0xFF2E5BDA.toInt())
+                        labelView.text = "الوجهة"
+                        showPreviewCard(d)
+                        map?.let { m ->
+                            try { m.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newLatLngZoom(org.maplibre.android.geometry.LatLng(d.latitude, d.longitude), 15.0)) } catch (_: Exception) {}
+                            try { savedRepo.highlight(d.id) } catch (_: Exception) {}
+                        }
+                    }
+                    listCol.addView(row, LinearLayout.LayoutParams(-1,-2).apply { setMargins(0,0,0,dp(8)) })
+                }
+            }
+            refresh("")
+            input.addTextChangedListener(object : android.text.TextWatcher { override fun beforeTextChanged(s:CharSequence?,a:Int,b:Int,c:Int){} override fun onTextChanged(s:CharSequence?,a:Int,b:Int,c:Int){} override fun afterTextChanged(s:android.text.Editable?){ refresh(s?.toString() ?: "") } })
+            val dlg = com.nova.gpspro.ui.NovaDialog(this).title("بحث 🔎").content(box).button("إغلاق", C.TEXT2){ it.dismiss() }
+            box.tag = dlg
+            dlg.show()
+            input.requestFocus()
+            try { val imm = getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager; imm.showSoftInput(input, 0) } catch (_: Exception) {}
+        } catch (e: Exception) { android.widget.Toast.makeText(this, "تعذر فتح البحث", android.widget.Toast.LENGTH_SHORT).show() }
+    }
+
     private fun showMapSettings() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(12), dp(12), dp(12)) }
-        box.addView(TextView(this).apply { text = "الطبقات (8 طبقات حقيقية)"; setTextColor(C.TEXT); textSize = 14f; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) })
+        box.addView(TextView(this).apply { text = "الطبقات (3 طبقات)"; setTextColor(C.TEXT); textSize = 14f; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) })
         styleManager.orderedLayers.forEach { key ->
             val isCurrent = key == currentLayerKey
             box.addView(TextView(this).apply {
@@ -787,8 +883,7 @@ class MapActivity : ComponentActivity() {
                     val cam = map?.cameraPosition
                     val url = styleManager.currentStyleUrl()
                     val maxZ = when (key) {
-                        "satellite", "hybrid" -> 19.0
-                        "topo" -> 17.0
+                        "satellite" -> 19.0
                         else -> 20.0
                     }
                     try { map?.setMaxZoomPreference(maxZ) } catch (_: Exception) {}

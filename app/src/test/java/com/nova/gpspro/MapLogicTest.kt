@@ -8,20 +8,18 @@ import java.io.File
 
 class MapLogicTest {
 
-    // 8 layers – real, no fakes
-    @Test fun layersCountIs8() {
-        // Check orderedLayers size via reflection without context – we test via expected list
-        val expected = listOf("dark","streets","light","satellite","hybrid","terrain","topo","navigation")
-        assertEquals(8, expected.size)
+    // 3 layers only – as requested: light, dark, satellite HD
+    @Test fun layersCountIs3() {
+        val expected = listOf("light","dark","satellite")
+        assertEquals(3, expected.size)
         assertTrue(expected.contains("dark"))
+        assertTrue(expected.contains("light"))
         assertTrue(expected.contains("satellite"))
-        assertTrue(expected.contains("hybrid"))
-        assertTrue(expected.contains("topo"))
     }
-    @Test fun darkLayerExists() { assertTrue(listOf("dark","streets","light","satellite","hybrid","terrain","topo","navigation").contains("dark")) }
-    @Test fun satelliteLayerIsReal() { assertTrue(listOf("dark","streets","light","satellite","hybrid","terrain","topo","navigation").contains("satellite")) }
-    @Test fun hybridLayerDistinctFromSatellite() { assertNotEquals("satellite", "hybrid") }
-    @Test fun topoDistinctFromTerrain() { assertNotEquals("terrain", "topo") }
+    @Test fun darkLayerExists() { assertTrue(listOf("light","dark","satellite").contains("dark")) }
+    @Test fun satelliteLayerIsReal() { assertTrue(listOf("light","dark","satellite").contains("satellite")) }
+    @Test fun lightLayerDistinctFromDark() { assertNotEquals("light", "dark") }
+    @Test fun satelliteDistinctFromLight() { assertNotEquals("satellite", "light") }
 
     // Routing providers
     @Test fun routingProvidersExist() {
@@ -48,8 +46,8 @@ class MapLogicTest {
 
     // Style URLs and palette
     @Test fun styleUrlsContainAsset() {
-        val expected = listOf("dark","streets","light","satellite","hybrid","terrain","topo","navigation")
-        assertEquals(8, expected.size)
+        val expected = listOf("light","dark","satellite")
+        assertEquals(3, expected.size)
     }
     @Test fun stylePaletteColorsAreDefined() {
         val colors = listOf("#0B1220", "#D9A441", "#35D6D1", "#2856BC", "#FAF7F0", "#1E3A5F")

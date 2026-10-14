@@ -1,24 +1,21 @@
-# مصادر الخرائط والتراخيص – NOVA GPS PRO (Online فقط)
+# مصادر الخرائط والتراخيص – RMG-GPS-Pro (Online فقط)
 
-> **التاريخ:** 2026-10-14 – الفرع `arena/01a10882-nova-gps-pro`
+> **التاريخ:** 2026-10-14 – الفرع `arena/01a10882-nova-gps-pro` – **تحديث: 3 طبقات فقط**
 > **الهدف:** 25 ألف مستخدم، 10 آلاف يومياً – بنية قانونية قابلة للتوسع، بدون Google Maps API مدفوع إجباري.
 
-## 1) الطبقات الـ 8 الحقيقية (MapLibre Native)
+## 1) الطبقات الـ 3 المتبقية (MapLibre Native) — تلبية الطلب
 
-جميع الطبقات تستخدم **MapLibre Native Android (BSD)** مع مصادر مفتوحة ومرخّصة. التبديل سريع (`Style.Builder.fromUri` + حفظ `CameraPosition`) ويحافظ على الموقع/التكبير/المسار. لا طبقات شكلية مكررة.
+جميع الطبقات تستخدم **MapLibre Native Android (BSD)** مع مصادر مفتوحة ومرخّصة. التبديل سريع (`Style.Builder.fromUri` + حفظ `CameraPosition`) ويحافظ على الموقع/التكبير/المسار. لا طبقات مخفية أو غير مستخدمة في الكود/القائمة.
 
 | # | المفتاح | الاسم العربي | النوع | المصدر | الترخيص | الاستخدام التجاري | ملاحظات |
 |---|---------|--------------|-------|---------|----------|-------------------|---------|
-| 1 | `dark` | الليلية السوداء والذهبية | Vector | `https://tiles.openfreemap.org/planet` (OpenFreeMap) | BSD + ODbL (بيانات OSM) | مسموح مع نسب OSM | `openmaptiles` vector + `natural_earth_shaded_relief` |
-| 2 | `streets` | الشوارع التفصيلية | Vector | OpenFreeMap Liberty | BSD + ODbL | مسموح | الأكثر تفصيلاً |
-| 3 | `light` | النهارية الفاتحة | Vector | OpenFreeMap Positron/Bright | BSD + ODbL | مسموح | خلفية `#F2F3F5` |
-| 4 | `satellite` | القمر الصناعي عالي الجودة | Raster | `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}` (Esri) | Esri Terms – مجاني للعرض المباشر مع نسب، غير مسموح التخزين الكثيف | مسموح للعرض | حتى `z19` |
-| 5 | `hybrid` | الهجين (قمر + طرق وأسماء) | Raster + Vector Overlay | Esri raster + OpenFreeMap vector شفاف | Esri + ODbL | مسموح للعرض | نفس القمر + طبقة `transportation` و `place` |
-| 6 | `terrain` | التضاريس والمرتفعات | Raster-DEM + Hillshade | `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png` (Mapzen Terrarium) | MIT | مسموح | `hillshade-exaggeration 0.55` |
-| 7 | `topo` | الطبوغرافية وخطوط الارتفاعات | Raster | `https://{a,b,c}.tile.opentopomap.org/{z}/{x}/{y}.png` (OpenTopoMap) | CC BY-SA 3.0 | مسموح مع نسب | كنتور وارتفاعات `maxzoom 17` |
-| 8 | `navigation` | الطرق والملاحة | Vector | OpenFreeMap مع إبراز الطرق | BSD + ODbL | مسموح | خلفية `#EAF0F8` |
+| 1 | `light` | النهارية الفاتحة | Vector | `https://tiles.openfreemap.org/planet` (OpenFreeMap Bright) | BSD + ODbL | مسموح | خلفية فاتحة نظيفة |
+| 2 | `dark` | الليلية السوداء والذهبية | Vector | `https://tiles.openfreemap.org/planet` (OpenFreeMap Dark) | BSD + ODbL | مسموح | `openmaptiles` + ثيم RMG ليلي |
+| 3 | `satellite` | القمر الصناعي عالي الجودة | Raster | `https://clarity.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}` + fallback `server.arcgisonline.com` (Esri Clarity HD) | Esri Terms – مجاني للعرض المباشر مع نسب | مسموح للعرض | **Clarity HD** `maxzoom 19`، `tileSize 256`، `raster-resampling linear` |
 
-**الصور الفضائية – تشخيص “Map data not yet available”:** السبب ليس خطأً في التطبيق بل **overzoom رقمي**: مصدر Esri World Imagery مجاني بدقة عالية يغطي العراق كاملاً حتى `maxzoom 19 / tile 256` (≈ 0.3m في المدن). عند التكبير إلى `z20+` لا توجد بلاطات، فالخادم يعيد بلاطة 404 عليها النص “Map data not yet available”. الحل: **قفل الكاميرا عند `maxZoom 19` للقمر والهجين و `17` للطبوغرافي** (`MapLibreMap.setMaxZoomPreference`) لمنع التشويش/التكبير الرقمي المشوش. للعراق لا يوجد مصدر مجاني أعلى من 19 بجودة شارع-بيت بدون تشويش — الأعلى يتطلب اشتراكاً مدفوعاً (MapTiler Satellite `z20-22` بدقة 0.15m أو Maxar SecureWatch). جرى الحفاظ على السرعة عبر عدم تحميل بلاطات خارج النطاق، وEsri يتحمل آلاف المستخدمين مع Rate Limit معقول؛ بينما EOX Sentinel-2 (10m) أقل دقة فلا يستخدم كبديل للقمر. Google Satellite غير مستخدم لأنه يمنع التخزين بدون ترخيص.
+**تم حذف:** `streets`, `hybrid`, `terrain`, `topo`, `navigation` (ملفات `hybrid.json`, `streets.json`, `terrain.json`, `topo.json`, `navigation.json` محذوفة، و `MapStyleManager.orderedLayers` الآن 3 فقط).
+
+**الصور الفضائية – إصلاح جذري “Map data not yet available”:** السبب **overzoom رقمي**: Esri مجاني حتى `z19` فقط. الحل الحالي: **مصدر Clarity HD** (أعلى جودة مجانية من Esri، يغطي العراق 0.3m مدن، 0.5–1m ريف) مع fallback لخوادم Esri الثلاثة + `maxZoom 19` مقفل (`MapLibreMap.setMaxZoomPreference`) + `raster-resampling linear` لمنع التشويش. عند `z>19` يُمنع التكبير الرقمي نهائياً فلا تظهر رسالة الخطأ في الاستخدام الطبيعي. مصدر مجاني أعلى من 19 بجودة بيت-شارع غير متاح للعراق — يتطلب دفع (MapTiler/Mapbox `z20–22` 0.15m أو Maxar). EOX Sentinel-2 (10m) غير مستخدم لضعف دقته. Google Satellite غير مستخدم لمخالفة الترخيص.
 
 **2D/3D:** كل Vector تدعم `FillExtrusion` للمباني: `building-3d` يستخدم `coalesce(get render_height, get height, * get levels 3.5, 6)` مع `fillExtrusionOpacity 0.88` في 3D و `NONE` في 2D. زر `3D` منفصل عن زر الطبقات – لا طبقات مكررة.
 
@@ -47,20 +44,30 @@
 - مكتبة `androidx.work:work-runtime-ktx` – إزالة من `build.gradle.kts`.
 - لا حذف للمواقع المحفوظة ولا لنظام GPS/السهم الأصلي (`ArrowEngine`, `DestinationRepository` بقيت).
 
-## 4) أدوات الخريطة الجديدة (يمين عمودي فعلي، أزرق NOVA – إصلاح RTL)
+## 4) أدوات الخريطة الجديدة — إعادة تصميم احترافي يمين (RMG أزرق، RTL ثابت)
 
-`sideCol` على `Gravity.RIGHT|CENTER_VERTICAL` مع `layoutDirection LTR` إجباري – حتى في الوضع العربي (RTL) تبقى الأزرار على اليمين الفعلي (لا `END` المنعكس). `topMargin 90dp` و `bottomMargin 90dp` و `rightMargin 12dp`.
-الترتيب: **تكبير (+) → تصغير (−) → موقعي (◎) → البوصلة (◉) → الطبقات (⬢) → 2D/3D** – كل زر دائري **48dp بصري / 56dp لمس** (مطابق للمواصفة 44–56dp)، خلفية `C.PRIMARY_A` (أزرق NOVA #2856BC)، أيقونة بيضاء **16sp** أكبر، `elevation 4dp`, Ripple, مسافة منتظمة **6dp** بلا تداخل. زر الطبقات الآن يفتح **قائمة اختيار أنيقة** (8 طبقات + مؤشر ✓) لا يغير تلقائياً.
+**الشريط العلوي:** `topPill` أبيض مستدير `cornerRadius 24dp` → **يمينه زر بحث 🔎 أزرق دائري 36dp** (`R.drawable بحث` داخل نفس الشريط، لا زر دائري × منفصل)، يساره زر رجوع ‹ 32dp، وسطه عنوان الوجهة. نظيف واحترافي، البحث جزء من نفس الشريط.
 
-**موقعي:** `centerToMyLocation()` → `LocationEngine.awaitFreshLocation()` → `animateCamera 16.0`.
-**الكاميرا:** منظور قيادة حقيقي `tilt 45–50°` + `zoom ذكي 15.5–17.5 حسب السرعة` (أبطأ=أقرب، أسرع=أوسع) + `offset 75m` سهم أسفل المنتصف + تثبيت Bearing عند التوقف + Follow Camera سلس بلا قفزات.
+`sideCol` على `Gravity.RIGHT|CENTER_VERTICAL` مع `layoutDirection LTR` — يبقى يمين فعلي في RTL. `topMargin 90dp` `rightMargin 12dp`.
 
-## 5) الاختبارات
+**الأزرار الستة — مميزة وغير متشابهة:**
+- **تكبير/تصغير (+/−):** `TextView` 52dp دائري أزرق `#2856BC` نص 18sp، إحساس مميز
+- **موقعي الحالي ⌖:** `vectorIconButton(R.drawable.ic_my_location)` — هدف دقيق مع صليب (أيقونة target واضحة)
+- **البوصلة:** `ic_compass_north` — بوصلة بإبرة شمال واضحة
+- **الطبقات:** `ic_layers_stack` — ثلاث طبقات متراكبة (stacked layers)
+- **3D:** `ic_cube_3d` — مكعب ثلاثي الأبعاد (cube)
+كل زر **52dp بصري / 60dp لمس**، `elevation 5dp`، Ripple أبيض 33%، خلفية زرقاء مع حدود `#1E3A5F`، **أيقونات بيضاء 26dp** واضحة، مسافة **8dp** منتظمة بلا ازدحام. زر الطبقات يفتح **قائمة صغيرة يدوية 3 طبقات فقط** مع ✓، لا تبديل تلقائي، ويحافظ على الكاميرا.
 
-- `testDebugUnitTest` محدثة: 8 طبقات، عدم وجود `OfflineMapManager`, توفر `RoutingProvider`, haversine, ألوان.
-- `assembleDebug` – يبني بدون PMTiles.
-- يدوي (خطة جهاز حقيقي): سهم أزرق 48dp/144px لا يختفي تحت المسار، بداية المسار من أقرب شارع مع وصلة برتقالية إذا داخل البيت، كاميرا ملاحة `tilt 45–50 zoom 15.8–17.0 offset 75m` سلسة وتثبت عند التوقف، سرعة/مسافة/ETA من GPS حقيقي، 6 أزرار يمين فعلي (RTL) بلا تداخل، اختيار طبقات أنيق 8، جودة قمر عند `z19` مع منع `z20` المشوش.
-- CI: GitHub Actions `assembleDebug` يبني APK ويُحمّل Artifact `app-debug.apk` – لا يُعتبر نجاح البناء وحده دليل عمل القمر/GPS دون اختبار جهاز حقيقي.
+**موقعي:** `centerToMyLocation()` → `awaitFreshLocation()` → `zoom 16.0`.
+**البحث:** `showMapSearchDialog()` — `EditText` + `ScrollView` يفلتر `destinations.all()` محلياً (12 نتيجة أولى)، اختيار وجهة ينقل الكاميرا `z15` ويبرزها.
+**الكاميرا:** `tilt 45–50°` + `zoom ذكي 15.5–17.5 حسب السرعة` + `offset 75m` سهم أسفل المنتصف + تثبيت Bearing + Follow سلس.
+
+## 5) الاختبارات — 3 طبقات
+
+- `testDebugUnitTest` محدثة: **3 طبقات** (`light,dark,satellite`)، لا `OfflineMapManager`، مزودي توجيه، haversine.
+- `assembleDebug` — بدون PMTiles/WorkManager.
+- يدوي (جهاز حقيقي): زر بحث ظاهر أعلى، لا زر × يمين، 3 طبقات فقط تختار يدوياً، قمر Clarity HD واضح حتى `z19` بلا رسالة، 6 أزرار يمين مميزة (target/layers/cube مفهومة)، تكبير/تصغير متناسق، حفظ الموقع والتكبير عند تبديل الطبقة.
+- CI: GitHub Actions `assembleDebug` → `app-debug.apk`.
 
 ---
 **الخلاصة القانونية:** كل المصادر تسمح بالاستخدام التجاري مع نسب OSM/Esri/OpenTopoMap. Esri/Terrarium/OpenTopoMap مجانية للعرض لكن ليست بلا حدود – لـ 10k يومياً يجب Cache أو استضافة ذاتية. لا Google API مدفوع إجباري.

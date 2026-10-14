@@ -32,27 +32,17 @@ class MapStyleManager(private val context: Context) {
         get() = prefs.getString("layer", "dark") ?: "dark"
         private set(v) { prefs.edit().putString("layer", v).apply() }
 
-    // Ordered 8 real layers – no fakes/duplicates
+    // 3 layers only – as requested: light, dark, satellite HD
     val orderedLayers: List<String> = listOf(
-        "dark",        // 1. الليلية السوداء والذهبية
-        "streets",     // 2. الشوارع التفصيلية
-        "light",       // 3. النهارية
-        "satellite",   // 4. القمر الصناعي عالي الجودة
-        "hybrid",      // 5. الهجين مع الطرق والأسماء
-        "terrain",     // 6. التضاريس والمرتفعات
-        "topo",        // 7. الطبوغرافية وخطوط الارتفاعات
-        "navigation"   // 8. الطرق والملاحة
+        "light",       // 1. النهارية الفاتحة
+        "dark",        // 2. الليلية السوداء والذهبية
+        "satellite"    // 3. القمر الصناعي عالي الجودة
     )
 
     fun layerLabel(key: String): String = when (key) {
         "dark" -> "الليلية السوداء والذهبية"
-        "streets" -> "الشوارع التفصيلية"
         "light" -> "النهارية الفاتحة"
         "satellite" -> "القمر الصناعي"
-        "hybrid" -> "الهجين (قمر + طرق)"
-        "terrain" -> "التضاريس والمرتفعات"
-        "topo" -> "الطبوغرافية"
-        "navigation" -> "الملاحة والطرق"
         else -> key
     }
 
@@ -67,28 +57,18 @@ class MapStyleManager(private val context: Context) {
 
     fun currentStyleUrl(): String {
         return when (currentLayer) {
-            "dark" -> "asset://mapstyles/dark.json"
-            "streets" -> "asset://mapstyles/streets.json"
             "light" -> "asset://mapstyles/light.json"
+            "dark" -> "asset://mapstyles/dark.json"
             "satellite" -> "asset://mapstyles/satellite.json"
-            "hybrid" -> "asset://mapstyles/hybrid.json"
-            "terrain" -> "asset://mapstyles/terrain.json"
-            "topo" -> "asset://mapstyles/topo.json"
-            "navigation" -> "asset://mapstyles/navigation.json"
-            else -> "asset://mapstyles/dark.json"
+            else -> "asset://mapstyles/light.json"
         }
     }
 
     fun styleUrlFor(key: String): String = when (key) {
-        "dark" -> "asset://mapstyles/dark.json"
-        "streets" -> "asset://mapstyles/streets.json"
         "light" -> "asset://mapstyles/light.json"
+        "dark" -> "asset://mapstyles/dark.json"
         "satellite" -> "asset://mapstyles/satellite.json"
-        "hybrid" -> "asset://mapstyles/hybrid.json"
-        "terrain" -> "asset://mapstyles/terrain.json"
-        "topo" -> "asset://mapstyles/topo.json"
-        "navigation" -> "asset://mapstyles/navigation.json"
-        else -> "asset://mapstyles/dark.json"
+        else -> "asset://mapstyles/light.json"
     }
 
     fun applyStyle(style: Style, map: MapLibreMap) {
