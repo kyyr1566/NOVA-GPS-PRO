@@ -47,22 +47,20 @@ jobs:
             test.log
           if-no-files-found: warn
 
-      - name: Push build log to ci-logs branch on failure
+      - name: Create issue with build log on failure
         if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Pushing build log to ci-logs branch..."
-          git config user.name "ci-bot"
-          git config user.email "ci@bot.local"
-          git fetch origin ci-logs 2>&1 | head -n 20 || true
-          git checkout -B ci-logs 2>&1 | head -n 20
-          mkdir -p ci-logs
-          cp build.log ci-logs/build-${{ github.run_id }}.log 2>&1 | head -n 20 || echo "no build.log" > ci-logs/build-${{ github.run_id }}.log
-          cp test.log ci-logs/test-${{ github.run_id }}.log 2>&1 | head -n 20 || true
-          tail -n 300 build.log > ci-logs/tail-${{ github.run_id }}.txt 2>&1 || true
-          git add ci-logs/ 2>&1 | head -n 20
-          git commit -m "ci log ${{ github.run_id }} ${{ github.sha }}" 2>&1 | head -n 20 || true
-          git push origin ci-logs --force 2>&1 | head -n 20 || true
-          echo "pushed"
+          echo "Creating issue with build log..."
+          TAIL=$(tail -n 300 build.log 2>/dev/null | head -c 40000)
+          if [ -z "$TAIL" ]; then TAIL="(empty)"; fi
+          BODY=$(printf "Build failed run %s sha %s\n\n\`\`\`\n%s\n\`\`\`" "${{ github.run_id }}" "${{ github.sha }}" "$TAIL")
+          echo "$BODY" > /tmp/issue_body.txt
+          head -n 50 /tmp/issue_body.txt
+          gh issue create --title "Build log ${{ github.run_id }}" --body-file /tmp/issue_body.txt 2>&1 | head -n 20 || \
+          gh api repos/${{ github.repository }}/issues -f title="Build log ${{ github.run_id }}" -F body=@/tmp/issue_body.txt 2>&1 | head -n 20 || true
+          echo "done"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
