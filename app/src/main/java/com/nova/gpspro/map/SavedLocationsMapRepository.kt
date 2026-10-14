@@ -57,11 +57,11 @@ class SavedLocationsMapRepository(private val repo: DestinationRepository) {
             val source = GeoJsonSource("nova-dest-source", geoJson)
             style.addSource(source)
 
-            // Symbol layer with orange pin
+            // Symbol layer with orange pin – larger, professional (96px bitmap, iconSize 1.0)
             val layer = SymbolLayer("nova-dest-layer", "nova-dest-source")
             layer.setProperties(
                 PropertyFactory.iconImage("nova-pin-orange"),
-                PropertyFactory.iconSize(0.85f),
+                PropertyFactory.iconSize(1.05f),
                 PropertyFactory.iconAllowOverlap(true),
                 PropertyFactory.iconIgnorePlacement(true),
                 PropertyFactory.iconAnchor("bottom"),
@@ -70,29 +70,8 @@ class SavedLocationsMapRepository(private val repo: DestinationRepository) {
             )
             style.addLayer(layer)
 
-            // Selected highlight as larger blue halo circle beneath pin
-            if (selectedId != null) {
-                val selected = dests.find { it.id == selectedId }
-                if (selected != null) {
-                    val selJson = """{"type":"Feature","geometry":{"type":"Point","coordinates":[${selected.longitude},${selected.latitude}]},"properties":{}}"""
-                    val selSource = GeoJsonSource("nova-dest-selected-source", selJson)
-                    style.addSource(selSource)
-                    val selLayer = CircleLayer("nova-dest-selected-layer", "nova-dest-selected-source")
-                    selLayer.setProperties(
-                        PropertyFactory.circleRadius(18f),
-                        PropertyFactory.circleColor("#1A3A8F"),
-                        PropertyFactory.circleOpacity(0.18f),
-                        PropertyFactory.circleStrokeWidth(2f),
-                        PropertyFactory.circleStrokeColor("#2856BC")
-                    )
-                    // Add below pin layer for halo effect
-                    try {
-                        style.addLayerBelow(selLayer, "nova-dest-layer")
-                    } catch (_: Exception) {
-                        style.addLayer(selLayer)
-                    }
-                }
-            }
+            // No blue halo around pin on selection – removed per spec.
+            // Keep GPS accuracy circle (handled by LocationTrackingController separately).
 
             // Also listen for taps via Map click in MapActivity – this repo only renders.
         } catch (_: Exception) {}
@@ -100,6 +79,11 @@ class SavedLocationsMapRepository(private val repo: DestinationRepository) {
 
     fun highlight(id: String) {
         selectedId = id
+        showAll()
+    }
+
+    fun clearHighlight() {
+        selectedId = null
         showAll()
     }
 
@@ -143,14 +127,14 @@ class SavedLocationsMapRepository(private val repo: DestinationRepository) {
     }
 
     private fun createOrangePinBitmap(): Bitmap {
-        val size = 72
+        val size = 96
         val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
-        // Outer orange circle
+        // Outer orange circle – larger for clarity
         val orange = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFFF7A00.toInt() // vivid orange matching reference
             style = Paint.Style.FILL
-            setShadowLayer(3f, 0f, 2f, 0x33000000)
+            setShadowLayer(4f, 0f, 3f, 0x33000000)
         }
         val white = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFFFFFFF.toInt()
@@ -161,16 +145,16 @@ class SavedLocationsMapRepository(private val repo: DestinationRepository) {
             style = Paint.Style.FILL
         }
         val cx = size / 2f
-        val cy = size / 2f - 4f // shift up for pin point
-        // Orange outer
-        c.drawCircle(cx, cy, 22f, orange)
-        // White inner
-        c.drawCircle(cx, cy, 13.5f, white)
-        // Black arrow (triangle pointing north-east slightly)
+        val cy = size / 2f - 6f // shift up for pin point
+        // Orange outer – 30dp radius (vs 22 before)
+        c.drawCircle(cx, cy, 30f, orange)
+        // White inner – 18dp
+        c.drawCircle(cx, cy, 18f, white)
+        // Black arrow – larger triangle
         val path = Path().apply {
-            moveTo(cx, cy - 8f)
-            lineTo(cx - 6.5f, cy + 5f)
-            lineTo(cx + 6.5f, cy + 5f)
+            moveTo(cx, cy - 10f)
+            lineTo(cx - 8.5f, cy + 7f)
+            lineTo(cx + 8.5f, cy + 7f)
             close()
         }
         c.drawPath(path, black)
@@ -179,7 +163,7 @@ class SavedLocationsMapRepository(private val repo: DestinationRepository) {
             color = 0x33FFFFFF
             style = Paint.Style.FILL
         }
-        c.drawCircle(cx - 6f, cy - 7f, 4f, hi)
+        c.drawCircle(cx - 8f, cy - 9f, 5.5f, hi)
         return bmp
     }
 

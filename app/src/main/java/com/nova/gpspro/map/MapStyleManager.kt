@@ -21,9 +21,9 @@ class MapStyleManager(private val context: Context) {
         get() = prefs.getBoolean("is3D", false)
         set(v) { prefs.edit().putBoolean("is3D", v).apply() }
 
-    private var currentLayer: String
+    var currentLayer: String
         get() = prefs.getString("layer", "dark") ?: "dark"
-        set(v) { prefs.edit().putString("layer", v).apply() }
+        private set(v) { prefs.edit().putString("layer", v).apply() }
 
     fun setLayer(key: String) {
         currentLayer = key

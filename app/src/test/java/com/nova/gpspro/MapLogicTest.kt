@@ -21,9 +21,9 @@ class MapLogicTest {
     @Test fun mapModeOnlineExists() { assertNotNull(OfflineMapManager.MapMode.ONLINE) }
     @Test fun mapModeOfflineExists() { assertNotNull(OfflineMapManager.MapMode.OFFLINE) }
 
-    // 9-12: MapPackageManifest
+    // 9-12: MapPackageManifest – 19 governorates + Iraq combined
     @Test fun defaultManifestNotEmpty() { assertTrue(MapPackageManifest.defaultPackages().packages.isNotEmpty()) }
-    @Test fun defaultManifestHasCorrectCount() { assertEquals(19, MapPackageManifest.defaultPackages().packages.size) }
+    @Test fun defaultManifestHasCorrectCount() { assertEquals(20, MapPackageManifest.defaultPackages().packages.size) }
     @Test fun manifestPackageHasId() { assertTrue(MapPackageManifest.defaultPackages().packages.all { it.id.isNotBlank() }) }
     @Test fun manifestPackageHasUrl() { assertTrue(MapPackageManifest.defaultPackages().packages.all { it.url.isNotBlank() }) }
 

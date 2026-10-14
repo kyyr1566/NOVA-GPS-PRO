@@ -24,6 +24,7 @@ import org.maplibre.android.maps.Style
 /**
  * Professional Map Screen — MapLibre Native, offline PMTiles, vector, 3D, routing.
  * Keeps original arrow navigation untouched (separate system).
+ * Fixed: destination clear on ×, preview card only name+start, turquoise route on start, enlarged pins/buttons, right-side column, honest offline, instant layer cycle.
  */
 class MapActivity : ComponentActivity() {
 
@@ -44,22 +45,26 @@ class MapActivity : ComponentActivity() {
     private var navigationSession: NavigationSessionManager? = null
 
     private lateinit var destNameView: TextView
-    private lateinit var distanceView: TextView
-    private lateinit var etaView: TextView
-    private lateinit var speedView: TextView
     private lateinit var bottomBar: LinearLayout
+    private lateinit var statsRow: LinearLayout
+    private lateinit var dividerView: View
+    private lateinit var primaryActionBtn: TextView
+    private lateinit var cardTitleView: TextView
+    private lateinit var cardSubtitleView: TextView
+    private lateinit var labelView: TextView
 
     private var targetDestination: Destination? = null
     private var pendingPreviewLat: Double? = null
     private var pendingPreviewLon: Double? = null
     private var pendingPreviewName: String? = null
+    private var isNavigating: Boolean = false
+    private var currentLayerKey: String = "dark"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
             MapLibre.getInstance(this)
         } catch (e: Exception) {
-            // MapLibre already initialized or failed — continue, MapView will handle
             android.util.Log.e("NOVA_MAP", "MapLibre init failed", e)
         } catch (e: Error) {
             android.util.Log.e("NOVA_MAP", "MapLibre native init failed", e)
@@ -110,6 +115,7 @@ class MapActivity : ComponentActivity() {
         setContentView(root)
 
         styleManager = MapStyleManager(this)
+        currentLayerKey = try { styleManager.currentLayer } catch (_: Exception) { "dark" }
         cameraController = MapCameraController()
         cameraController.init(this)
         locationController = LocationTrackingController(this)
@@ -119,10 +125,13 @@ class MapActivity : ComponentActivity() {
         navigationSession = NavigationSessionManager(this, routingRepo, lifecycleScope)
         navigationSession?.onRouteUpdated = { route ->
             runOnUiThread {
-                if (route != null) {
-                    distanceView.text = formatDistance(route.distanceMeters)
-                    etaView.text = formatDuration(route.durationSeconds)
-                    bottomBar.visibility = View.VISIBLE
+                // Only auto-update stats if already navigating – preview must not show stats
+                if (isNavigating && route != null) {
+                    distanceViewGlobal?.let { it.text = formatDistance(route.distanceMeters) }
+                    etaViewGlobal?.let { it.text = formatDuration(route.durationSeconds) }
+                    try {
+                        cardSubtitleView.text = "${formatDistance(route.distanceMeters)} • ${formatDuration(route.durationSeconds)}"
+                    } catch (_: Exception) {}
                 }
             }
         }
@@ -144,18 +153,24 @@ class MapActivity : ComponentActivity() {
                     cameraController.attach(mapLibreMap)
                     setupMap(mapLibreMap)
                     navigationSession?.attach(mapLibreMap)
-                    pendingPreviewLat?.let { lat ->
-                        pendingPreviewLon?.let { lon ->
-                            val name = pendingPreviewName
-                            if (targetDestination != null) navigationSession?.previewDestination(targetDestination!!)
-                            else navigationSession?.previewLatLng(lat, lon, name)
-                            val pos = CameraPosition.Builder().target(LatLng(lat, lon)).zoom(15.0).build()
-                            mapLibreMap.animateCamera(CameraUpdateFactory.newCameraPosition(pos), 600)
-                            lifecycleScope.launch {
-                                try {
-                                    val loc = locationController.lastLocation() ?: locationController.awaitFreshLocation()
-                                    if (loc != null) navigationSession?.requestRoute(loc.latitude, loc.longitude)
-                                } catch (_: Exception) {}
+                    // Show preview without auto-routing – stats must not appear before Start
+                    targetDestination?.let { dest ->
+                        runOnUiThread {
+                            showPreviewCard(dest)
+                            pendingPreviewLat?.let { lat ->
+                                pendingPreviewLon?.let { lon ->
+                                    val pos = CameraPosition.Builder().target(LatLng(lat, lon)).zoom(15.0).build()
+                                    mapLibreMap.animateCamera(CameraUpdateFactory.newCameraPosition(pos), 600)
+                                }
+                            }
+                        }
+                    } ?: run {
+                        // No destination – ensure preview cleared and map normal
+                        pendingPreviewLat?.let { lat ->
+                            pendingPreviewLon?.let { lon ->
+                                // If only lat/lon without Destination object (edge), still just center camera, no card
+                                val pos = CameraPosition.Builder().target(LatLng(lat, lon)).zoom(14.0).build()
+                                mapLibreMap.animateCamera(CameraUpdateFactory.newCameraPosition(pos), 600)
                             }
                         }
                     }
@@ -170,7 +185,21 @@ class MapActivity : ComponentActivity() {
         }
 
         setupUi(root)
+        // If opened without destination, ensure UI is normal (no card)
+        if (targetDestination == null) {
+            // post to ensure bottomBar initialized
+            root.post { clearPreview(animate = false) }
+        }
     }
+
+    // Views for stats that are accessed from callbacks – keep global refs to avoid null
+    private var distanceViewGlobal: TextView? = null
+    private var etaViewGlobal: TextView? = null
+    private var speedViewGlobal: TextView? = null
+
+    private lateinit var distanceView: TextView
+    private lateinit var etaView: TextView
+    private lateinit var speedView: TextView
 
     private fun setupMap(map: MapLibreMap) {
         try { map.uiSettings.isRotateGesturesEnabled = true } catch (_: Exception) {}
@@ -191,7 +220,6 @@ class MapActivity : ComponentActivity() {
                         try {
                             styleManager.applyStyle(style, map)
                             savedRepo.attach(map)
-                            targetDestination?.let { dest -> savedRepo.highlight(dest.id) }
                         } catch (e: Exception) { android.util.Log.e("NOVA_MAP", "offline style apply failed", e) }
                     }
                 })
@@ -206,7 +234,7 @@ class MapActivity : ComponentActivity() {
                             val id = feats[0].getStringProperty("id")
                             val dest = if (id != null) savedRepo.getDestinationById(id) else null
                             if (dest != null) {
-                                runOnUiThread { showMarkerCard(dest) }
+                                runOnUiThread { showMarkerPreview(dest) }
                                 return@addOnMapClickListener true
                             }
                         }
@@ -228,13 +256,11 @@ class MapActivity : ComponentActivity() {
                     try {
                         styleManager.applyStyle(style, map)
                         savedRepo.attach(map)
-                        targetDestination?.let { dest -> savedRepo.highlight(dest.id) }
                     } catch (e: Exception) { android.util.Log.e("NOVA_MAP", "style apply failed", e) }
                 }
             })
         } catch (e: Exception) {
             android.util.Log.e("NOVA_MAP", "setStyle failed: $effectiveStyle", e)
-            // Fallback to minimal dark background so app does not crash
             try {
                 val fallback = Style.Builder().fromJson("{\"version\":8,\"sources\":{},\"layers\":[{\"id\":\"background\",\"type\":\"background\",\"paint\":{\"background-color\":\"#0B1220\"}}]}")
                 map.setStyle(fallback) { style ->
@@ -251,7 +277,7 @@ class MapActivity : ComponentActivity() {
         cameraController.restoreCamera()?.let { pos ->
             map.moveCamera(CameraUpdateFactory.newCameraPosition(pos))
         }
-        // Tap on saved orange pin shows card with exact coordinates
+        // Tap on saved orange pin shows preview card with exact coordinates (no auto-route)
         map.addOnMapClickListener { point ->
             try {
                 val screen = map.projection.toScreenLocation(point)
@@ -260,7 +286,7 @@ class MapActivity : ComponentActivity() {
                     val id = feats[0].getStringProperty("id")
                     val dest = if (id != null) savedRepo.getDestinationById(id) else null
                     if (dest != null) {
-                        runOnUiThread { showMarkerCard(dest) }
+                        runOnUiThread { showMarkerPreview(dest) }
                         return@addOnMapClickListener true
                     }
                 }
@@ -292,23 +318,22 @@ class MapActivity : ComponentActivity() {
         }
         // Center: label "الوجهة" + name
         val centerCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
-        val labelView = TextView(this).apply { text = "الوجهة"; setTextColor(0xFF8A8E99.toInt()); textSize = 11f; gravity = Gravity.CENTER }
+        labelView = TextView(this).apply { text = "الوجهة"; setTextColor(0xFF8A8E99.toInt()); textSize = 11f; gravity = Gravity.CENTER }
         destNameView = TextView(this).apply {
-            text = targetDestination?.name ?: "جسر الروضة"
-            setTextColor(0xFF2E5BDA.toInt()); textSize = 16f; gravity = Gravity.CENTER
+            text = targetDestination?.name ?: "—"
+            setTextColor(if (targetDestination != null) 0xFF2E5BDA.toInt() else 0xFF8A8E99.toInt()); textSize = 16f; gravity = Gravity.CENTER
             maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         }
         centerCol.addView(labelView); centerCol.addView(destNameView)
         val closeBtn = TextView(this).apply {
-            text = "×"; contentDescription = "إغلاق"; gravity = Gravity.CENTER
+            text = "×"; contentDescription = "إغلاق / إلغاء الوجهة"; gravity = Gravity.CENTER
             setTextColor(0xFF6B7280.toInt()); textSize = 20f
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFF0F1F5.toInt())
             }
-            setOnClickListener { finish() }
+            setOnClickListener { clearPreview() }
         }
-        // Keep layers access via long-press on close or via side button – but also add hidden layers button top-left for power users
         topPill.addView(backBtn, LinearLayout.LayoutParams(dp(32), dp(32)))
         topPill.addView(centerCol, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(8), 0, dp(8), 0) })
         topPill.addView(closeBtn, LinearLayout.LayoutParams(dp(32), dp(32)))
@@ -318,52 +343,34 @@ class MapActivity : ComponentActivity() {
         }
         root.addView(topPill, topParams)
 
-        // Hidden quick access: long-press close opens layers/settings – plus visible side column
-        closeBtn.setOnLongClickListener { showLayersSheet(); true }
-
-        // ── Side controls – all on right, small, white with blue icons, 36dp visual 48dp touch ──
+        // ── Side controls – all on right, below top pill, slightly larger (42dp visual / 52dp touch) ──
         val sideCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
-        val layersBtn = smallIconButton("⬢", "الطبقات") { showLayersSheet() }
-        val mapTypeBtn = smallIconButton("▭", "نوع الخريطة") { showLayersSheet() }
+        val layersBtn = smallIconButton("⬢", "الطبقات") { cycleLayers() }
         val compassBtn = smallIconButton("◉", "الشمال") { map?.let { cameraController.bearingNorth(it) } }
         val myLocBtn = smallIconButton("◎", "موقعي") { centerToMyLocation() }
         val threeDBtn = smallIconButton("3D", "ثلاثي الأبعاد") { toggle3D() }
         val zoomInBtn = smallIconButton("+", "تكبير") { map?.animateCamera(CameraUpdateFactory.zoomIn()) }
         val zoomOutBtn = smallIconButton("−", "تصغير") { map?.animateCamera(CameraUpdateFactory.zoomOut()) }
+        val settingsBtn = smallIconButton("⚙", "الإعدادات") { showMapSettings() }
+        val downloadBtn = smallIconButton("⭳", "تنزيل الخرائط") { showOfflineManager() }
 
-        // Top two (layers) sit near top-right under pill, rest centered
-        val topSideCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
-        listOf(layersBtn, mapTypeBtn).forEach { btn ->
+        // Order: layers, compass, myLoc, 3D, zoomIn, zoomOut, settings, download – all visible always
+        listOf(layersBtn, compassBtn, myLocBtn, threeDBtn, zoomInBtn, zoomOutBtn, settingsBtn, downloadBtn).forEach { btn ->
             val wrapper = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { setMargins(0, dp(2), 0, dp(2)) }
+                layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { setMargins(0, dp(2), 0, dp(2)) }
                 isClickable = false
             }
-            wrapper.addView(btn, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
-            wrapper.setOnClickListener { btn.performClick() }
-            topSideCol.addView(wrapper)
-        }
-        val topSideParams = FrameLayout.LayoutParams(-2, -2).apply {
-            gravity = Gravity.TOP or Gravity.END
-            setMargins(0, dp(72), dp(8), 0)
-        }
-        root.addView(topSideCol, topSideParams)
-
-        listOf(compassBtn, myLocBtn, threeDBtn, zoomInBtn, zoomOutBtn).forEach { btn ->
-            val wrapper = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { setMargins(0, dp(2), 0, dp(2)) }
-                isClickable = false
-            }
-            wrapper.addView(btn, FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
+            wrapper.addView(btn, FrameLayout.LayoutParams(dp(42), dp(42), Gravity.CENTER))
             wrapper.setOnClickListener { btn.performClick() }
             sideCol.addView(wrapper)
         }
         val sideParams = FrameLayout.LayoutParams(-2, -2).apply {
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setMargins(0, 0, dp(8), 0)
+            gravity = Gravity.TOP or Gravity.END
+            setMargins(0, dp(78), dp(8), 0)
         }
         root.addView(sideCol, sideParams)
 
-        // ── Bottom floating card – not full width, rounded 20dp, like reference ──
+        // ── Bottom floating card – small, not full width, rounded 20dp ──
         bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -374,7 +381,7 @@ class MapActivity : ComponentActivity() {
                 setColor(0xFFFFFFFF.toInt())
             }
             elevation = dp(10).toFloat()
-            visibility = if (targetDestination != null) View.VISIBLE else View.GONE
+            visibility = View.GONE
         }
         // Handle
         val handle = View(this).apply {
@@ -395,42 +402,43 @@ class MapActivity : ComponentActivity() {
         iconBox.addView(bridgeIcon, FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER))
         headerRow.addView(iconBox, LinearLayout.LayoutParams(dp(44), dp(44)))
         val titleCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_VERTICAL }
-        val cardTitle = TextView(this).apply {
-            text = targetDestination?.name ?: "جسر الروضة"
+        cardTitleView = TextView(this).apply {
+            text = targetDestination?.name ?: ""
             setTextColor(C.TEXT); textSize = 16f; maxLines = 1
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
         }
-        val cardSubtitle = TextView(this).apply {
-            text = "٤,٨ كم  •  ١٢ دقيقة"
+        cardSubtitleView = TextView(this).apply {
+            text = ""
             setTextColor(C.TEXT2); textSize = 13f
+            visibility = View.GONE
         }
-        titleCol.addView(cardTitle); titleCol.addView(cardSubtitle)
+        titleCol.addView(cardTitleView); titleCol.addView(cardSubtitleView)
         headerRow.addView(titleCol, LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(10), 0, dp(10), 0) })
         val arrowBtn = TextView(this).apply {
             text = "›"; gravity = Gravity.CENTER; setTextColor(0xFF3F74EA.toInt()); textSize = 20f
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFF0F4FF.toInt())
             }
-            setOnClickListener { startNavigation() }
+            setOnClickListener { if (isNavigating) endNavigation() else startNavigation() }
         }
         headerRow.addView(arrowBtn, LinearLayout.LayoutParams(dp(36), dp(36)))
         bottomBar.addView(headerRow, LinearLayout.LayoutParams(-1, -2))
 
-        // Divider
-        val div1 = View(this).apply { setBackgroundColor(0xFFF0F1F5.toInt()) }
-        bottomBar.addView(div1, LinearLayout.LayoutParams(-1, dp(1)).apply { setMargins(0, dp(12), 0, dp(12)) })
+        // Divider – hidden in preview, visible in active
+        dividerView = View(this).apply { setBackgroundColor(0xFFF0F1F5.toInt()); visibility = View.GONE }
+        bottomBar.addView(dividerView, LinearLayout.LayoutParams(-1, dp(1)).apply { setMargins(0, dp(12), 0, dp(12)) })
 
-        // Stats row: 3 cols
-        val statsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        distanceView = TextView(this).apply { text = "٤,٨ كم"; setTextColor(C.TEXT); textSize = 16f; gravity = Gravity.CENTER; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) }
+        // Stats row: 3 cols – hidden until navigation starts
+        statsRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; visibility = View.GONE }
+        distanceView = TextView(this).apply { text = "—"; setTextColor(C.TEXT); textSize = 16f; gravity = Gravity.CENTER; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) }
         val dLab = TextView(this).apply { text = "المسافة المتبقية"; setTextColor(C.TEXT2); textSize = 11f; gravity = Gravity.CENTER }
         val dCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
         dCol.addView(distanceView); dCol.addView(dLab)
-        etaView = TextView(this).apply { text = "١٢ دقيقة"; setTextColor(C.TEXT); textSize = 16f; gravity = Gravity.CENTER; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) }
+        etaView = TextView(this).apply { text = "—"; setTextColor(C.TEXT); textSize = 16f; gravity = Gravity.CENTER; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) }
         val eLab = TextView(this).apply { text = "الوقت المتوقع"; setTextColor(C.TEXT2); textSize = 11f; gravity = Gravity.CENTER }
         val eCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
         eCol.addView(etaView); eCol.addView(eLab)
-        speedView = TextView(this).apply { text = "٠ كم/س"; setTextColor(C.TEXT); textSize = 16f; gravity = Gravity.CENTER; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) }
+        speedView = TextView(this).apply { text = "—"; setTextColor(C.TEXT); textSize = 16f; gravity = Gravity.CENTER; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) }
         val sLab = TextView(this).apply { text = "السرعة الحالية"; setTextColor(C.TEXT2); textSize = 11f; gravity = Gravity.CENTER }
         val sCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
         sCol.addView(speedView); sCol.addView(sLab)
@@ -441,9 +449,13 @@ class MapActivity : ComponentActivity() {
         statsRow.addView(dCol, LinearLayout.LayoutParams(0, -2, 1f))
         bottomBar.addView(statsRow, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(14)) })
 
-        // Blue button
-        val startBtn = TextView(this).apply {
-            text = "◤  ابدأ الملاحة"
+        distanceViewGlobal = distanceView
+        etaViewGlobal = etaView
+        speedViewGlobal = speedView
+
+        // Primary action button – toggles Start / End
+        primaryActionBtn = TextView(this).apply {
+            text = "◤  ابدأ التوجه"
             setTextColor(android.graphics.Color.WHITE); textSize = 15f; gravity = Gravity.CENTER
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
             background = android.graphics.drawable.GradientDrawable(
@@ -451,12 +463,9 @@ class MapActivity : ComponentActivity() {
                 intArrayOf(0xFF3F74EA.toInt(), 0xFF2E56C8.toInt())
             ).apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(14).toFloat() }
             setPadding(dp(16), dp(14), dp(16), dp(14))
-            setOnClickListener { startNavigation() }
+            setOnClickListener { if (isNavigating) endNavigation() else startNavigation() }
         }
-        bottomBar.addView(startBtn, LinearLayout.LayoutParams(-1, -2))
-
-        // Keep refs for dynamic updates – cardTitle/subtitle will be updated via showPreviewCard
-        bottomBar.tag = cardTitle to cardSubtitle
+        bottomBar.addView(primaryActionBtn, LinearLayout.LayoutParams(-1, -2))
 
         val bottomParams = FrameLayout.LayoutParams(-1, -2).apply {
             gravity = Gravity.BOTTOM
@@ -486,62 +495,106 @@ class MapActivity : ComponentActivity() {
         }
         root.addView(attr, attrParams)
 
-        targetDestination?.let { showPreviewCard(it) }
+        // Initial UI state: if destination already set via intent, preview will be shown by onCreate callback; else keep hidden
     }
 
     private fun showPreviewCard(dest: Destination) {
-        bottomBar.visibility = View.VISIBLE
-        // Update top pill title
-        try { destNameView.text = dest.name } catch (_: Exception) {}
-        // Update card header if available
-        try {
-            val tag = bottomBar.tag as? Pair<*, *>
-            (tag?.first as? TextView)?.text = dest.name
-        } catch (_: Exception) {}
-        lifecycleScope.launch {
-            val loc = locationController.lastLocation() ?: locationController.awaitFreshLocation()
-            if (loc != null) {
-                val route = routingRepo.route(loc.latitude, loc.longitude, dest.latitude, dest.longitude)
-                distanceView.text = formatDistance(route.distanceMeters)
-                etaView.text = formatDuration(route.durationSeconds)
-                val speed = try { loc.speed.toDouble() } catch (_: Exception) { 0.0 }
-                speedView.text = formatSpeed(speed)
-                // Update subtitle in card header
-                try {
-                    val tag = bottomBar.tag as? Pair<*, *>
-                    (tag?.second as? TextView)?.text = "${formatDistance(route.distanceMeters)}  •  ${formatDuration(route.durationSeconds)}"
-                } catch (_: Exception) {}
-            } else {
-                val d = haversine(dest.latitude, dest.longitude)
-                val distStr = if (d > 0) String.format("%.1f كم", d/1000) else "—"
-                distanceView.text = distStr
-                try {
-                    val tag = bottomBar.tag as? Pair<*, *>
-                    (tag?.second as? TextView)?.text = distStr
-                } catch (_: Exception) {}
-            }
-        }
-    }
-
-    private fun showMarkerCard(dest: Destination) {
-        // Called when user taps a saved pin – shows same bottom card with exact coordinates
         targetDestination = dest
         pendingPreviewLat = dest.latitude
         pendingPreviewLon = dest.longitude
         pendingPreviewName = dest.name
-        savedRepo.highlight(dest.id)
-        showPreviewCard(dest)
-        // Also animate camera to marker
+        isNavigating = false
+        // Update top pill
+        try {
+            destNameView.text = dest.name
+            destNameView.setTextColor(0xFF2E5BDA.toInt())
+        } catch (_: Exception) {}
+        // Update card
+        try {
+            cardTitleView.text = dest.name
+            cardSubtitleView.text = ""
+            cardSubtitleView.visibility = View.GONE
+        } catch (_: Exception) {}
+        // Preview mode: hide stats, divider, set Start button
+        bottomBar.visibility = View.VISIBLE
+        statsRow.visibility = View.GONE
+        dividerView.visibility = View.GONE
+        primaryActionBtn.text = "◤  ابدأ التوجه"
+        primaryActionBtn.setTextColor(android.graphics.Color.WHITE)
+        primaryActionBtn.background = android.graphics.drawable.GradientDrawable(
+            android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(0xFF3F74EA.toInt(), 0xFF2E56C8.toInt())
+        ).apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(14).toFloat() }
+        primaryActionBtn.setOnClickListener { startNavigation() }
+        // Reset trip info to placeholders
+        distanceView.text = "—"
+        etaView.text = "—"
+        speedView.text = "—"
+        // Ensure no old route is shown – clear previous route if any
+        try { navigationSession?.clearRoute() } catch (_: Exception) {}
+        try { savedRepo.highlight(dest.id) } catch (_: Exception) {}
+    }
+
+    private fun showMarkerPreview(dest: Destination) {
+        // Called when user taps a saved pin – shows only name + start, no auto-route, no stats
+        targetDestination = dest
+        pendingPreviewLat = dest.latitude
+        pendingPreviewLon = dest.longitude
+        pendingPreviewName = dest.name
+        isNavigating = false
+        try {
+            destNameView.text = dest.name
+            destNameView.setTextColor(0xFF2E5BDA.toInt())
+        } catch (_: Exception) {}
+        try {
+            cardTitleView.text = dest.name
+            cardSubtitleView.text = ""
+            cardSubtitleView.visibility = View.GONE
+        } catch (_: Exception) {}
+        bottomBar.visibility = View.VISIBLE
+        statsRow.visibility = View.GONE
+        dividerView.visibility = View.GONE
+        primaryActionBtn.text = "◤  ابدأ التوجه"
+        primaryActionBtn.setTextColor(android.graphics.Color.WHITE)
+        primaryActionBtn.background = android.graphics.drawable.GradientDrawable(
+            android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+            intArrayOf(0xFF3F74EA.toInt(), 0xFF2E56C8.toInt())
+        ).apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(14).toFloat() }
+        primaryActionBtn.setOnClickListener { startNavigation() }
+        distanceView.text = "—"; etaView.text = "—"; speedView.text = "—"
+        try { navigationSession?.clearRoute() } catch (_: Exception) {}
+        try { savedRepo.highlight(dest.id) } catch (_: Exception) {}
+        // Animate camera to marker
         map?.let { m ->
             val pos = CameraPosition.Builder().target(LatLng(dest.latitude, dest.longitude)).zoom(15.0).build()
             m.animateCamera(CameraUpdateFactory.newCameraPosition(pos), 600)
-            lifecycleScope.launch {
-                try {
-                    val loc = locationController.lastLocation() ?: locationController.awaitFreshLocation()
-                    if (loc != null) navigationSession?.previewDestination(dest)
-                    if (loc != null) navigationSession?.requestRoute(loc.latitude, loc.longitude)
-                } catch (_: Exception) {}
-            }
+        }
+        // Preview session but do NOT request route yet
+        try { navigationSession?.previewDestination(dest) } catch (_: Exception) {}
+    }
+
+    private fun clearPreview(animate: Boolean = true) {
+        targetDestination = null
+        pendingPreviewLat = null
+        pendingPreviewLon = null
+        pendingPreviewName = null
+        isNavigating = false
+        try {
+            destNameView.text = "—"
+            destNameView.setTextColor(0xFF8A8E99.toInt())
+        } catch (_: Exception) {}
+        bottomBar.visibility = View.GONE
+        statsRow.visibility = View.GONE
+        dividerView.visibility = View.GONE
+        // Clear route and highlight
+        try { navigationSession?.clearRoute() } catch (_: Exception) {}
+        try { savedRepo.clearHighlight() } catch (_: Exception) {}
+        // Clear navigationEngine destination if any – but keep arrow logic untouched except clearing map route
+        try {
+            // Do not touch NovaApp navigation arrow unless explicitly ending – clearPreview just hides UI
+        } catch (_: Exception) {}
+        if (animate) {
+            android.widget.Toast.makeText(this, "تم إلغاء الوجهة", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -563,14 +616,14 @@ class MapActivity : ComponentActivity() {
             this.contentDescription = desc
             gravity = Gravity.CENTER
             setTextColor(C.PRIMARY_A) // blue matching identity
-            textSize = 14f
+            textSize = 15f
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
                 setColor(0xFFFFFFFF.toInt())
                 setStroke(dp(1), 0xFFE5E7EB.toInt())
             }
-            elevation = dp(2).toFloat()
+            elevation = dp(3).toFloat()
             setOnClickListener { onClick() }
         }
     }
@@ -620,44 +673,32 @@ class MapActivity : ComponentActivity() {
         }
     }
 
-    private fun showLayersSheet() {
-        val sheet = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(16)) }
-        // Only expose layers that actually load vector data without API key (OpenFreeMap + Esri free)
-        val layers = listOf(
-            "الخريطة الليلية" to "dark",
-            "خريطة الشوارع" to "streets",
-            "القمر الصناعي" to "satellite"
-        )
-        layers.forEach { (label, key) ->
-            val row = TextView(this).apply {
-                text = label
-                textSize = 15f
-                setTextColor(C.TEXT)
-                setPadding(dp(12), dp(12), dp(12), dp(12))
-                background = android.graphics.drawable.RippleDrawable(
-                    android.content.res.ColorStateList.valueOf(C.GOLD_PALE),
-                    android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(8).toFloat(); setColor(C.CARD_SOFT) },
-                    null
-                )
-                setOnClickListener {
-                    styleManager.setLayer(key)
-                    val url = styleManager.currentStyleUrl()
-                    val effective = if (url.startsWith("pmtiles://")) "asset://mapstyles/dark.json" else url
-                    map?.setStyle(Style.Builder().fromUri(effective)) { style ->
-                        styleManager.applyStyle(style, map!!)
-                        savedRepo.attach(map!!)
-                        targetDestination?.let { d -> savedRepo.highlight(d.id) }
-                        navigationSession?.let { sess ->
-                            sess.getRoute()?.let { r -> sess.drawRoute(r) }
-                        }
-                    }
-                    (sheet.parent as? android.view.ViewGroup)?.let { p -> p.removeView(sheet) }
-                }
+    private fun cycleLayers() {
+        val order = listOf("dark", "streets", "satellite")
+        val labels = mapOf("dark" to "الخريطة الليلية", "streets" to "خريطة الشوارع", "satellite" to "القمر الصناعي")
+        val idx = order.indexOf(currentLayerKey).let { if (it == -1) 0 else it }
+        val next = order[(idx + 1) % order.size]
+        currentLayerKey = next
+        styleManager.setLayer(next)
+        val cam = map?.cameraPosition
+        val url = styleManager.currentStyleUrl()
+        val effective = if (url.startsWith("pmtiles://")) "asset://mapstyles/dark.json" else url
+        map?.setStyle(Style.Builder().fromUri(effective)) { style ->
+            styleManager.applyStyle(style, map!!)
+            savedRepo.attach(map!!)
+            // keep map position
+            cam?.let { map?.moveCamera(CameraUpdateFactory.newCameraPosition(it)) }
+            // redraw active route if navigating
+            if (isNavigating) {
+                navigationSession?.getRoute()?.let { navigationSession?.drawRoute(it) }
             }
-            sheet.addView(row, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(4), 0, dp(4)) })
         }
-        com.nova.gpspro.ui.NovaDialog(this).title("الطبقات").content(sheet)
-            .button(getString(R.string.cancel), C.TEXT2) { it.dismiss() }.show()
+        android.widget.Toast.makeText(this, labels[next] ?: next, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showLayersSheet() {
+        // Instant cycle – no empty sheet, no cancel – per spec 8
+        cycleLayers()
     }
 
     private fun showMapSettings() {
@@ -699,18 +740,14 @@ class MapActivity : ComponentActivity() {
         val scroll = android.widget.ScrollView(this)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)) }
         scroll.addView(box)
-        // Load real manifest with sizes and URLs
         val manifest = try { MapPackageManifest.defaultPackages() } catch (_: Exception) { null }
         val pkgs = manifest?.packages ?: OfflineMapManager.availableGovernorates().map { (id, ar) ->
             MapPackageManifest.PackageInfo(id, ar, id, "https://github.com/kyyr1566/NOVA-GPS-PRO/releases/download/maps-v1/$id.pmtiles", 0L, null, null, "1")
         }
-        // Info header
         box.addView(TextView(this).apply {
             text = "الخرائط للعمل دون إنترنت (PMTiles Vector)\nالمصدر: OpenStreetMap (ODbL) عبر planetiler. كل محافظة ملف منفصل."
             setTextColor(C.TEXT2); textSize = 12f; setPadding(0, 0, 0, dp(10))
         })
-        // Progress observer map
-        val statusViews = mutableMapOf<String, TextView>()
         pkgs.forEach { pkg ->
             val has = OfflineMapManager.hasOffline(this, pkg.id)
             val file = OfflineMapManager.pmtilesFile(this, pkg.id)
@@ -734,23 +771,18 @@ class MapActivity : ComponentActivity() {
                 }
                 setPadding(dp(10), dp(7), dp(10), dp(7))
             }
-            statusViews[pkg.id] = action
             action.setOnClickListener {
                 if (OfflineMapManager.hasOffline(this@MapActivity, pkg.id)) {
                     OfflineMapManager.deletePackage(this@MapActivity, pkg.id)
                     action.text = "تنزيل"; action.setTextColor(C.PRIMARY_A)
-                    // Update subtitle
                     try { (nameCol.getChildAt(1) as TextView).text = "الحجم: $sizeMb" } catch (_: Exception) {}
                     android.widget.Toast.makeText(this@MapActivity, "تم الحذف: ${pkg.nameAr}", android.widget.Toast.LENGTH_SHORT).show()
                 } else {
-                    // Real download via WorkManager with progress, size, sha256, verification
                     try {
-                        // Check network
                         action.text = "0%"
                         action.setTextColor(C.TEXT2)
                         MapDownloadWorker.enqueue(this@MapActivity, pkg)
                         android.widget.Toast.makeText(this@MapActivity, "بدء تنزيل ${pkg.nameAr} ($sizeMb)", android.widget.Toast.LENGTH_SHORT).show()
-                        // Observe progress
                         val wm = androidx.work.WorkManager.getInstance(this@MapActivity)
                         wm.getWorkInfosByTagLiveData(pkg.id).observe(this@MapActivity) { infos ->
                             val info = infos?.firstOrNull() ?: return@observe
@@ -759,14 +791,12 @@ class MapActivity : ComponentActivity() {
                             if (prog in 0..100 && state == androidx.work.WorkInfo.State.RUNNING) {
                                 action.text = "$prog%"
                             } else if (state == androidx.work.WorkInfo.State.SUCCEEDED) {
-                                // Verify file
                                 val f = OfflineMapManager.pmtilesFile(this@MapActivity, pkg.id)
                                 val ok = f.exists() && f.length() > 1024 && OfflineMapManager.verifySha256(f, pkg.sha256)
                                 if (ok) {
                                     action.text = "✓ مثبت"; action.setTextColor(0xFF1B8B2A.toInt())
                                     try { (nameCol.getChildAt(1) as TextView).text = "✓ مثبت • ${String.format("%.1f MB", f.length()/1024.0/1024.0)}" } catch (_: Exception) {}
                                     android.widget.Toast.makeText(this@MapActivity, "تم تثبيت ${pkg.nameAr} – جاهز دون إنترنت", android.widget.Toast.LENGTH_LONG).show()
-                                    // If this is first offline file, reload map style to offline
                                     try { map?.let { m -> m.getStyle { style -> styleManager.applyStyle(style, m) } } } catch (_: Exception) {}
                                 } else {
                                     action.text = "فشل التحقق"; action.setTextColor(0xFFD9544D.toInt())
@@ -774,9 +804,14 @@ class MapActivity : ComponentActivity() {
                                 }
                             } else if (state == androidx.work.WorkInfo.State.FAILED) {
                                 val err = info.outputData.getString("error") ?: "فشل"
-                                if (err.contains("404") || err.contains("Not Found")) {
-                                    action.text = "غير متوفر"; action.setTextColor(0xFFD9544D.toInt())
-                                    android.widget.Toast.makeText(this@MapActivity, "الملف غير متوفر بعد على الخادم. يحتاج إنتاج PMTiles ورفعه إلى Releases.\nراجع OfflineMapManager.kt للتعليمات.", android.widget.Toast.LENGTH_LONG).show()
+                                if (err.contains("404") || err.contains("Not Found") || err.contains("sha256_mismatch")) {
+                                    if (err.contains("sha256")) {
+                                        action.text = "فشل التحقق"; action.setTextColor(0xFFD9544D.toInt())
+                                        android.widget.Toast.makeText(this@MapActivity, "فشل التحقق من ${pkg.nameAr}. احذف وحاول مرة أخرى.", android.widget.Toast.LENGTH_LONG).show()
+                                    } else {
+                                        action.text = "غير متوفر"; action.setTextColor(0xFFD9544D.toInt())
+                                        android.widget.Toast.makeText(this@MapActivity, "الملف غير متوفر بعد على الخادم. يحتاج إنتاج PMTiles ورفعه إلى Releases.\nراجع OfflineMapManager.kt للتعليمات.", android.widget.Toast.LENGTH_LONG).show()
+                                    }
                                 } else {
                                     action.text = "خطأ"; action.setTextColor(0xFFD9544D.toInt())
                                     android.widget.Toast.makeText(this@MapActivity, "فشل تنزيل ${pkg.nameAr}: $err", android.widget.Toast.LENGTH_LONG).show()
@@ -795,7 +830,6 @@ class MapActivity : ComponentActivity() {
             box.addView(row)
             box.addView(View(this).apply { setBackgroundColor(C.BORDER); layoutParams = LinearLayout.LayoutParams(-1, dp(1)) })
         }
-        // Offline test hint
         box.addView(TextView(this).apply {
             text = "للاختبار: حمّل محافظة (مثلاً بغداد)، ثم فعّل وضع الطيران وأعد فتح الخريطة. سيتم تحميل الخريطة من pmtiles://file:// دون إنترنت."
             setTextColor(C.TEXT2); textSize = 11f; setPadding(dp(4), dp(10), dp(4), dp(4))
@@ -843,21 +877,63 @@ class MapActivity : ComponentActivity() {
             val name = pendingPreviewName ?: "الوجهة"
             Destination(id = "preview", name = name, latitude = lat, longitude = lon, photoPath = null, notes = null, createdAt = System.currentTimeMillis())
         }
-        // Save as intent to NavigationEngine (arrow) — keep original arrow system untouched
-        try {
-            val novaApp = application as NovaApp
-            // Start arrow navigation (original system) via setDestination
-            novaApp.navigation.setDestination(dest)
-        } catch (_: Exception) {}
-        // Also keep map route visible
+        // Show loading state? Keep preview but prepare active
         lifecycleScope.launch {
             val loc = locationController.lastLocation() ?: locationController.awaitFreshLocation()
-            if (loc != null) navigationSession?.requestRoute(loc.latitude, loc.longitude)
+            if (loc == null) {
+                android.widget.Toast.makeText(this@MapActivity, "تعذر تحديد موقعك الحالي", android.widget.Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            try {
+                // Save to arrow system – keep original untouched
+                try { (application as NovaApp).navigation.setDestination(dest) } catch (_: Exception) {}
+                // Request real road route
+                navigationSession?.previewDestination(dest)
+                val route = routingRepo.route(loc.latitude, loc.longitude, dest.latitude, dest.longitude)
+                if (!route.isRoad || route.coordinates.size < 2) {
+                    // Do not show fake route or old numbers
+                    try { navigationSession?.clearRoute() } catch (_: Exception) {}
+                    android.widget.Toast.makeText(this@MapActivity, "تعذر حساب مسار عبر الشوارع — تحقق من الاتصال", android.widget.Toast.LENGTH_LONG).show()
+                    // Keep preview, do not switch to active
+                    return@launch
+                }
+                // Draw turquoise route
+                navigationSession?.drawRoute(route)
+                // Switch UI to active navigation
+                isNavigating = true
+                cardSubtitleView.text = "${formatDistance(route.distanceMeters)} • ${formatDuration(route.durationSeconds)}"
+                cardSubtitleView.visibility = View.VISIBLE
+                distanceView.text = formatDistance(route.distanceMeters)
+                etaView.text = formatDuration(route.durationSeconds)
+                val speed = try { loc.speed.toDouble() } catch (_: Exception) { 0.0 }
+                speedView.text = formatSpeed(speed)
+                statsRow.visibility = View.VISIBLE
+                dividerView.visibility = View.VISIBLE
+                primaryActionBtn.text = "⏹  إنهاء"
+                primaryActionBtn.setTextColor(android.graphics.Color.WHITE)
+                primaryActionBtn.background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                    cornerRadius = dp(14).toFloat()
+                    setColor(0xFFD93A3A.toInt())
+                }
+                primaryActionBtn.setOnClickListener { endNavigation() }
+                // Also keep bottomBar visible
+                bottomBar.visibility = View.VISIBLE
+                android.widget.Toast.makeText(this@MapActivity, "تم بدء التوجه: ${dest.name}", android.widget.Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                try { navigationSession?.clearRoute() } catch (_: Exception) {}
+                android.widget.Toast.makeText(this@MapActivity, "تعذر بدء الملاحة: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+            }
         }
-        android.widget.Toast.makeText(this, "تم بدء الملاحة: ${dest.name}", android.widget.Toast.LENGTH_SHORT).show()
-        // Keep bottom bar visible with live updates
-        bottomBar.visibility = View.VISIBLE
-        // Optionally finish to show arrow screen, but stay on map as requested
+    }
+
+    private fun endNavigation() {
+        isNavigating = false
+        // Stop session and clear route/destination/cards
+        try { navigationSession?.clearRoute() } catch (_: Exception) {}
+        // Also clear arrow destination? Keep arrow untouched but map route cleared – spec says remove destination and cards
+        clearPreview(animate = false)
+        android.widget.Toast.makeText(this, "تم إنهاء الملاحة", android.widget.Toast.LENGTH_SHORT).show()
     }
 
     private fun formatDistance(m: Double): String {
@@ -876,7 +952,6 @@ class MapActivity : ComponentActivity() {
         try {
             android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show()
         } catch (_: Exception) {}
-        // Fallback UI so app does not show blank/black screen
         try {
             val fallback = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -920,5 +995,3 @@ class MapActivity : ComponentActivity() {
     override fun onDestroy() { if (::mapView.isInitialized) try { mapView.onDestroy() } catch (_: Exception) {}; try { navigationSession?.detach() } catch (_: Exception) {}; super.onDestroy() }
     override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); if (::mapView.isInitialized) try { mapView.onSaveInstanceState(outState) } catch (_: Exception) {} }
 }
-
-
