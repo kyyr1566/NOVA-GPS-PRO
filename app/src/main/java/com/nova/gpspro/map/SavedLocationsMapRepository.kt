@@ -1,24 +1,17 @@
 package com.nova.gpspro.map
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
 import com.nova.gpspro.data.DestinationRepository
-import org.maplibre.android.annotations.Icon
-import org.maplibre.android.annotations.IconFactory
-import org.maplibre.android.annotations.Marker
-import org.maplibre.android.annotations.MarkerOptions
-import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
+import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.sources.GeoJsonSource
 
 /**
- * Shows all saved destinations as markers (WGS84 latitude/longitude).
+ * Shows all saved destinations as circle markers (WGS84).
+ * Uses GeoJsonSource + CircleLayer (core, no annotation plugin) for compatibility with MapLibre 11.
  */
 class SavedLocationsMapRepository(private val repo: DestinationRepository) {
 
-    private var markers: MutableList<Marker> = mutableListOf()
     private var map: MapLibreMap? = null
     private var selectedId: String? = null
 
@@ -34,22 +27,51 @@ class SavedLocationsMapRepository(private val repo: DestinationRepository) {
 
     fun showAll() {
         val m = map ?: return
+        val style = m.style ?: return
         clear()
         val dests = repo.all()
-        for (d in dests) {
-            try {
-                val isSelected = d.id == selectedId
-                val icon = createMarkerIcon(m, isSelected)
-                val marker = m.addMarker(
-                    MarkerOptions()
-                        .position(LatLng(d.latitude, d.longitude))
-                        .title(d.name)
-                        .snippet(String.format("%.6f, %.6f", d.latitude, d.longitude))
-                        .icon(icon)
-                )
-                markers.add(marker)
-            } catch (_: Exception) {}
-        }
+        if (dests.isEmpty()) return
+        try {
+            // Build GeoJSON FeatureCollection with all destinations
+            val features = dests.joinToString(",") { d ->
+                val isSel = d.id == selectedId
+                val color = if (isSel) "#2856BC" else "#D9A441"
+                // Store color in properties for styling via data-driven? For simplicity use single color but enlarge selected via separate source
+                // We'll create two collections: selected vs others for visual distinction
+                """{"type":"Feature","geometry":{"type":"Point","coordinates":[${d.longitude},${d.latitude}]},"properties":{"id":"${d.id}","name":${jsonEscape(d.name)},"selected":$isSel}}"""
+            }
+            val geoJson = """{"type":"FeatureCollection","features":[$features]}"""
+            val source = GeoJsonSource("nova-dest-source", geoJson)
+            style.addSource(source)
+            // Circle layer for all points
+            val layer = CircleLayer("nova-dest-layer", "nova-dest-source")
+            layer.setProperties(
+                PropertyFactory.circleRadius(7f),
+                PropertyFactory.circleColor("#D9A441"),
+                PropertyFactory.circleStrokeWidth(2f),
+                PropertyFactory.circleStrokeColor("#FFFFFF"),
+                PropertyFactory.circleOpacity(0.95f)
+            )
+            style.addLayer(layer)
+            // Selected highlight as larger circle
+            if (selectedId != null) {
+                val selected = dests.find { it.id == selectedId }
+                if (selected != null) {
+                    val selJson = """{"type":"Feature","geometry":{"type":"Point","coordinates":[${selected.longitude},${selected.latitude}]},"properties":{}}"""
+                    val selSource = GeoJsonSource("nova-dest-selected-source", selJson)
+                    style.addSource(selSource)
+                    val selLayer = CircleLayer("nova-dest-selected-layer", "nova-dest-selected-source")
+                    selLayer.setProperties(
+                        PropertyFactory.circleRadius(10f),
+                        PropertyFactory.circleColor("#2856BC"),
+                        PropertyFactory.circleStrokeWidth(2.5f),
+                        PropertyFactory.circleStrokeColor("#FFFFFF"),
+                        PropertyFactory.circleOpacity(1f)
+                    )
+                    style.addLayer(selLayer)
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     fun highlight(id: String) {
@@ -59,37 +81,19 @@ class SavedLocationsMapRepository(private val repo: DestinationRepository) {
 
     fun clear() {
         val m = map ?: return
-        for (mk in markers) {
-            try { m.removeMarker(mk) } catch (_: Exception) {}
-        }
-        markers.clear()
+        val style = m.style ?: return
+        try {
+            style.removeLayer("nova-dest-selected-layer")
+            style.removeSource("nova-dest-selected-source")
+        } catch (_: Exception) {}
+        try {
+            style.removeLayer("nova-dest-layer")
+            style.removeSource("nova-dest-source")
+        } catch (_: Exception) {}
     }
 
-    private fun createMarkerIcon(m: MapLibreMap, selected: Boolean): Icon {
-        val size = if (selected) 48 else 36
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bmp)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        paint.color = if (selected) 0xFF2856BC.toInt() else 0xFFD9A441.toInt()
-        paint.style = Paint.Style.FILL
-        val cx = size / 2f
-        val cy = size / 2.8f
-        val r = size / 3.2f
-        canvas.drawCircle(cx, cy, r, paint)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = 2f
-        paint.color = Color.WHITE
-        canvas.drawCircle(cx, cy, r, paint)
-        paint.style = Paint.Style.FILL
-        paint.color = if (selected) 0xFF2856BC.toInt() else 0xFFD9A441.toInt()
-        val tipPath = Path()
-        tipPath.moveTo(cx - r * 0.6f, cy + r * 0.7f)
-        tipPath.lineTo(cx + r * 0.6f, cy + r * 0.7f)
-        tipPath.lineTo(cx, size - 4f)
-        tipPath.close()
-        canvas.drawPath(tipPath, paint)
-        paint.color = Color.WHITE
-        canvas.drawCircle(cx, cy, r * 0.35f, paint)
-        return IconFactory.getInstance(m.context).fromBitmap(bmp)
+    private fun jsonEscape(s: String): String {
+        val esc = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+        return "\"$esc\""
     }
 }

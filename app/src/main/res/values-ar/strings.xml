@@ -226,4 +226,7 @@
     <string name="activation_error_network">تعذّر الاتصال. تحقّق من اتصال الإنترنت ثم حاول مجددًا.</string>
     <string name="activation_error_server">حدثت مشكلة مؤقتة في الخادم. حاول مجددًا بعد قليل.</string>
     <string name="activation_success">تم تفعيل الترخيص. أهلًا بك في NOVA GPS PRO.</string>
+    <string name="map_start_navigation">بدء الملاحة</string>
+    <string name="maps">الخرائط</string>
+    <string name="navigate_on_map">الملاحة على الخريطة</string>
 </resources>

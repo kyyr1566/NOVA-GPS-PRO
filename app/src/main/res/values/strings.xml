@@ -229,4 +229,7 @@
     <string name="activation_error_network">Could not connect. Check your internet connection and try again.</string>
     <string name="activation_error_server">A temporary server problem occurred. Please try again shortly.</string>
     <string name="activation_success">License activated. Welcome to NOVA GPS PRO.</string>
+    <string name="map_start_navigation">Start Navigation</string>
+    <string name="maps">Maps</string>
+    <string name="navigate_on_map">Navigate on Map</string>
 </resources>

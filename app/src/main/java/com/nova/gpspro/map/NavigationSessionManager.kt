@@ -2,21 +2,17 @@ package com.nova.gpspro.map
 
 import android.content.Context
 import com.nova.gpspro.data.Destination
-import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
-import org.maplibre.geojson.Feature
-import org.maplibre.geojson.LineString
-import org.maplibre.geojson.Point
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
  * Handles preview + navigation: draws route line, info bar, does not auto-start.
- * Start triggers the existing NavigationEngine (arrow).
+ * Uses GeoJson string (no org.maplibre.geojson dependency) for MapLibre 11 compatibility.
  */
 class NavigationSessionManager(
     private val context: Context,
@@ -30,7 +26,6 @@ class NavigationSessionManager(
     private var destLon: Double? = null
     private var destName: String? = null
 
-    // Callbacks
     var onRouteUpdated: ((RoutingRepository.RouteResult?) -> Unit)? = null
     var onError: ((String) -> Unit)? = null
 
@@ -42,7 +37,6 @@ class NavigationSessionManager(
         destLat = d.latitude
         destLon = d.longitude
         destName = d.name
-        // draw straight preview line until real route fetched
     }
 
     fun previewLatLng(lat: Double, lon: Double, name: String? = null) {
@@ -71,13 +65,12 @@ class NavigationSessionManager(
         val m = map ?: return
         val style = m.style ?: return
         try {
-            // Remove old
             style.removeLayer("nova-route-layer")
             style.removeSource("nova-route-source")
-            val points: List<Point> = route.coordinates.map { (lat, lon) -> Point.fromLngLat(lon, lat) }
-            val lineString = LineString.fromLngLats(points)
-            val feature = Feature.fromGeometry(lineString)
-            val source = GeoJsonSource("nova-route-source", feature)
+            // Build LineString coordinates as [lon, lat]
+            val coords = route.coordinates.joinToString(",") { (lat, lon) -> "[$lon,$lat]" }
+            val geoJson = """{"type":"Feature","geometry":{"type":"LineString","coordinates":[$coords]},"properties":{}}"""
+            val source = GeoJsonSource("nova-route-source", geoJson)
             style.addSource(source)
             val layer = LineLayer("nova-route-layer", "nova-route-source")
             layer.setProperties(
@@ -87,7 +80,6 @@ class NavigationSessionManager(
                 PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
                 PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
             )
-            // Add below symbols so route doesn't cover markers
             style.addLayer(layer)
         } catch (_: Exception) {}
     }
