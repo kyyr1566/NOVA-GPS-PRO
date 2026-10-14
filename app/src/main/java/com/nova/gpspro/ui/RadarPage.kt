@@ -1,13 +1,7 @@
 package com.nova.gpspro.ui
 
-import android.content.Context
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.location.LocationManager
 import android.view.Gravity
-import android.view.Surface
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.PopupMenu
@@ -22,11 +16,16 @@ import com.nova.gpspro.location.LocationEngine
 import com.nova.gpspro.navigation.GeoMath
 
 /**
- * Saved-location radar page. Marker positions are derived from REAL GPS distance/bearing +
- * REAL device azimuth (compass) for the compass rose rotation.
- *  - distance/bearing: recomputed on every valid GPS fix via GeoMath.between (range filter preserved)
- *  - azimuth: from rotation-vector sensor (or accel+mag fallback), applied only to compass ring
- *    and marker angular placement (so north stays true). Sweep + center arrow are visual only.
+ * Saved-location radar page. Marker positions are derived anew from the current GPS
+ * coordinate on EVERY valid GPS fix — GPS only, never device orientation or motion input.
+ *
+ * Layout (no ScrollView, nothing overlaps the bottom navigation bar):
+ *   header        – title + LIVE chip
+ *   controls      – Auto/Off scan toggle + range selector (100 m … 400 km + custom)
+ *   top GPS HUD   – real GPS FIX state, satellites actually used in the fix, current accuracy
+ *   radar disc    – as large as the space allows; centre = the phone's GPS position
+ *   bottom HUD    – «N destinations | nearest | its distance», or the picked destination's
+ *                   name + live real distance + target bearing while a marker is selected
  */
 class RadarPage(act: MainActivity) : Page(act) {
     private val c = act
@@ -47,17 +46,6 @@ class RadarPage(act: MainActivity) : Page(act) {
     private lateinit var accuracyValue: TextView
     private lateinit var bottomDot: View
     private lateinit var bottomText: TextView
-
-    // --- Real compass (sensor) ---
-    private var sensorManager: SensorManager? = null
-    private var rotationVectorSensor: Sensor? = null
-    private var accelerometerSensor: Sensor? = null
-    private var magnetometerSensor: Sensor? = null
-    private var compassListener: SensorEventListener? = null
-    private var gravityVec: FloatArray? = null
-    private var geomagneticVec: FloatArray? = null
-    private var smoothedAzimuth = 0f
-    private var hasCompassFix = false
 
     override val view: View = c.vbox().apply {
         setPadding(c.dp(16), c.dp(12), c.dp(16), c.dp(12))
@@ -384,119 +372,6 @@ class RadarPage(act: MainActivity) : Page(act) {
         updateBottomHud()
     }
 
-    // ------------------------------------------------------------- compass sensor (real azimuth)
-
-    private fun ensureSensors() {
-        if (sensorManager != null) return
-        sensorManager = c.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
-        val sm = sensorManager ?: return
-        rotationVectorSensor = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-        if (rotationVectorSensor == null) {
-            accelerometerSensor = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-            magnetometerSensor = sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
-        }
-    }
-
-    private fun startCompass() {
-        ensureSensors()
-        val sm = sensorManager ?: return
-        if (compassListener != null) return
-        compassListener = object : SensorEventListener {
-            override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-            override fun onSensorChanged(event: SensorEvent) {
-                val azimuth = when (event.sensor.type) {
-                    Sensor.TYPE_ROTATION_VECTOR -> azimuthFromRotationVector(event.values)
-                    Sensor.TYPE_ACCELEROMETER -> {
-                        gravityVec = lowPass(event.values, gravityVec)
-                        azimuthFromAccelMag()
-                    }
-                    Sensor.TYPE_MAGNETIC_FIELD -> {
-                        geomagneticVec = lowPass(event.values, geomagneticVec)
-                        azimuthFromAccelMag()
-                    }
-                    else -> null
-                } ?: return
-                // smooth
-                val diff = normDelta(azimuth, smoothedAzimuth)
-                smoothedAzimuth = norm360(smoothedAzimuth + diff * 0.18f)
-                // throttle: already filtered via listener rate UI, post directly
-                radar.setAzimuth(smoothedAzimuth)
-                hasCompassFix = true
-            }
-        }
-        val listener = compassListener ?: return
-        if (rotationVectorSensor != null) {
-            sm.registerListener(listener, rotationVectorSensor, SensorManager.SENSOR_DELAY_UI)
-        } else {
-            accelerometerSensor?.let { sm.registerListener(listener, it, SensorManager.SENSOR_DELAY_UI) }
-            magnetometerSensor?.let { sm.registerListener(listener, it, SensorManager.SENSOR_DELAY_UI) }
-        }
-    }
-
-    private fun stopCompass() {
-        val sm = sensorManager ?: return
-        compassListener?.let { sm.unregisterListener(it) }
-        compassListener = null
-    }
-
-    private fun azimuthFromRotationVector(values: FloatArray): Float? {
-        return try {
-            val rotationMatrix = FloatArray(9)
-            SensorManager.getRotationMatrixFromVector(rotationMatrix, values)
-            val adjusted = FloatArray(9)
-            val displayRotation = c.windowManager.defaultDisplay.rotation
-            when (displayRotation) {
-                Surface.ROTATION_90 -> SensorManager.remapCoordinateSystem(rotationMatrix, SensorManager.AXIS_Y, SensorManager.AXIS_MINUS_X, adjusted)
-                Surface.ROTATION_180 -> SensorManager.remapCoordinateSystem(rotationMatrix, SensorManager.AXIS_MINUS_X, SensorManager.AXIS_MINUS_Y, adjusted)
-                Surface.ROTATION_270 -> SensorManager.remapCoordinateSystem(rotationMatrix, SensorManager.AXIS_MINUS_Y, SensorManager.AXIS_X, adjusted)
-                else -> {
-                    System.arraycopy(rotationMatrix, 0, adjusted, 0, 9)
-                }
-            }
-            val orientation = FloatArray(3)
-            SensorManager.getOrientation(adjusted, orientation)
-            var az = Math.toDegrees(orientation[0].toDouble()).toFloat()
-            az = norm360(az)
-            az
-        } catch (_: Exception) { null }
-    }
-
-    private fun azimuthFromAccelMag(): Float? {
-        val g = gravityVec ?: return null
-        val m = geomagneticVec ?: return null
-        return try {
-            val r = FloatArray(9)
-            val i = FloatArray(9)
-            if (!SensorManager.getRotationMatrix(r, i, g, m)) return null
-            val adjusted = FloatArray(9)
-            val displayRotation = c.windowManager.defaultDisplay.rotation
-            when (displayRotation) {
-                Surface.ROTATION_90 -> SensorManager.remapCoordinateSystem(r, SensorManager.AXIS_Y, SensorManager.AXIS_MINUS_X, adjusted)
-                Surface.ROTATION_180 -> SensorManager.remapCoordinateSystem(r, SensorManager.AXIS_MINUS_X, SensorManager.AXIS_MINUS_Y, adjusted)
-                Surface.ROTATION_270 -> SensorManager.remapCoordinateSystem(r, SensorManager.AXIS_MINUS_Y, SensorManager.AXIS_X, adjusted)
-                else -> System.arraycopy(r, 0, adjusted, 0, 9)
-            }
-            val orientation = FloatArray(3)
-            SensorManager.getOrientation(adjusted, orientation)
-            norm360(Math.toDegrees(orientation[0].toDouble()).toFloat())
-        } catch (_: Exception) { null }
-    }
-
-    private fun lowPass(input: FloatArray, output: FloatArray?): FloatArray {
-        if (output == null) return input.clone()
-        val alpha = 0.85f
-        for (i in input.indices) output[i] = output[i] * alpha + input[i] * (1f - alpha)
-        return output
-    }
-
-    private fun norm360(a: Float): Float { var x = a % 360f; if (x < 0f) x += 360f; return x }
-    private fun normDelta(target: Float, current: Float): Float {
-        var d = target - current
-        while (d > 180f) d -= 360f
-        while (d < -180f) d += 360f
-        return d
-    }
-
     private val gpsListener = LocationEngine.Listener { render(it) }
     private val destinationsListener = DestinationRepository.Listener {
         savedDestinations = it
@@ -507,13 +382,11 @@ class RadarPage(act: MainActivity) : Page(act) {
         savedDestinations = act.app.destinations.all()
         act.app.destinations.addListener(destinationsListener)
         act.app.gps.addListener(gpsListener)
-        startCompass()
     }
 
     override fun onHide() {
         act.app.destinations.removeListener(destinationsListener)
         act.app.gps.removeListener(gpsListener)
-        stopCompass()
     }
 
     companion object {
