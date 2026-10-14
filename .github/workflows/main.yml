@@ -7,6 +7,10 @@ on:
       - main
       - "arena/**"
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -50,12 +54,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Creating issue with build log..."
-          TAIL=$(tail -n 400 build.log | head -c 90000)
-          printf "%s" "$TAIL" > /tmp/tail.txt
+          tail -n 500 build.log > /tmp/tail.txt
           echo "TAIL size $(wc -c < /tmp/tail.txt)"
-          # Create issue via gh api - body from file
-          gh api repos/${{ github.repository }}/issues -f title="Build log ${{ github.sha }}" --raw-field body="$(cat /tmp/tail.txt | head -c 65000)" || echo "issue create failed"
           cat /tmp/tail.txt
+          echo "--- attempting gh issue create ---"
+          gh issue create --title "Build log ${{ github.sha }}" --body-file /tmp/tail.txt || echo "issue create failed"
+          echo "done"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
