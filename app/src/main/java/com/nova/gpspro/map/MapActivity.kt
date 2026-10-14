@@ -7,6 +7,7 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import com.nova.gpspro.NovaApp
@@ -73,6 +74,10 @@ class MapActivity : ComponentActivity() {
     private var routeRemainingSeconds: Double = 0.0
     private var lastBearing: Float = 0f
     private var offRouteCount: Int = 0
+    // Satellite selection state
+    private var satelliteSelectionMode: Boolean = false
+    private var satFirstPoint: LatLng? = null
+    private var satSecondPoint: LatLng? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -239,8 +244,12 @@ class MapActivity : ComponentActivity() {
                 })
                 map.addOnCameraIdleListener { cameraController.saveCamera(map.cameraPosition) }
                 cameraController.restoreCamera()?.let { pos -> map.moveCamera(CameraUpdateFactory.newCameraPosition(pos)) }
-                // Click listener for saved pins – works offline too
+                // Click listener – satellite selection takes priority, then saved pins
                 map.addOnMapClickListener { point ->
+                    if (satelliteSelectionMode) {
+                        runOnUiThread { onSatelliteMapClick(point) }
+                        return@addOnMapClickListener true
+                    }
                     try {
                         val screen = map.projection.toScreenLocation(point)
                         val feats = map.queryRenderedFeatures(screen, "nova-dest-layer")
@@ -291,8 +300,12 @@ class MapActivity : ComponentActivity() {
         cameraController.restoreCamera()?.let { pos ->
             map.moveCamera(CameraUpdateFactory.newCameraPosition(pos))
         }
-        // Tap on saved orange pin shows preview card with exact coordinates (no auto-route)
+        // Tap – satellite selection takes priority
         map.addOnMapClickListener { point ->
+            if (satelliteSelectionMode) {
+                runOnUiThread { onSatelliteMapClick(point) }
+                return@addOnMapClickListener true
+            }
             try {
                 val screen = map.projection.toScreenLocation(point)
                 val feats = map.queryRenderedFeatures(screen, "nova-dest-layer")
@@ -759,24 +772,45 @@ class MapActivity : ComponentActivity() {
             MapPackageManifest.PackageInfo(id, ar, id, "https://github.com/kyyr1566/NOVA-GPS-PRO/releases/download/maps-v1/$id.pmtiles", 0L, null, null, "1")
         }
         box.addView(TextView(this).apply {
-            text = "الخرائط للعمل دون إنترنت (PMTiles Vector)\nالمصدر: OpenStreetMap (ODbL) عبر planetiler. كل محافظة ملف منفصل."
+            text = "الخرائط للعمل دون إنترنت (PMTiles Vector)\nالمصدر: OpenStreetMap (ODbL) عبر planetiler. كل محافظة ملف منفصل – يظهر الحجم والتقدم والتحقق."
             setTextColor(C.TEXT2); textSize = 12f; setPadding(0, 0, 0, dp(10))
         })
         pkgs.forEach { pkg ->
-            val has = OfflineMapManager.hasOffline(this, pkg.id)
             val file = OfflineMapManager.pmtilesFile(this, pkg.id)
+            val has = file.exists() && file.length() > 1024 // preliminary, will verify
+            val verified = if (has) OfflineMapManager.verifySha256(file, pkg.sha256) && file.length() > 1024 else false
             val sizeMb = if (pkg.sizeBytes > 0) String.format("%.0f MB", pkg.sizeBytes / 1024.0 / 1024.0) else "—"
+            // Determine state: UPDATE_AVAILABLE if verified but size differs >15% or sha mismatch (if sha provided)
+            val updateAvailable = verified && pkg.sizeBytes > 0 && kotlin.math.abs(file.length() - pkg.sizeBytes) > pkg.sizeBytes * 0.15
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(10), dp(8), dp(10)) }
-            val nameCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
-            nameCol.addView(TextView(this).apply { text = pkg.nameAr; setTextColor(C.TEXT); textSize = 14f; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) })
-            nameCol.addView(TextView(this).apply {
-                val existsInfo = if (has) "✓ مثبت • ${String.format("%.1f MB", file.length()/1024.0/1024.0)}" else "الحجم: $sizeMb"
-                text = existsInfo; setTextColor(C.TEXT2); textSize = 11f
-            })
+            val nameCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f); isClickable = false }
+            // Name – clicking it must NOT delete (spec)
+            nameCol.addView(TextView(this).apply { text = pkg.nameAr; setTextColor(C.TEXT); textSize = 14f; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL); isClickable = false })
+            val infoView = TextView(this).apply {
+                text = when {
+                    verified && updateAvailable -> "تحديث متاح • ${String.format("%.1f MB", file.length()/1024.0/1024.0)}"
+                    verified -> "✓ مكتمل • ${String.format("%.1f MB", file.length()/1024.0/1024.0)}"
+                    has && !verified -> "فشل التحقق • ${String.format("%.1f MB", file.length()/1024.0/1024.0)}"
+                    else -> "غير محمّل • الحجم: $sizeMb"
+                }
+                setTextColor(when {
+                    verified && !updateAvailable -> 0xFF1B8B2A.toInt()
+                    updateAvailable -> 0xFFB7791F.toInt()
+                    has && !verified -> 0xFFD93A3A.toInt()
+                    else -> C.TEXT2
+                }); textSize = 11f
+            }
+            nameCol.addView(infoView)
             row.addView(nameCol)
-            val action = TextView(this).apply {
-                text = if (has) "✓ مثبت" else "تنزيل"
-                setTextColor(if (has) 0xFF1B8B2A.toInt() else C.PRIMARY_A)
+            // Actions column: primary + delete independent
+            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val primary = TextView(this).apply {
+                // Initial state
+                when {
+                    verified && updateAvailable -> { text = "تحديث"; setTextColor(C.PRIMARY_A) }
+                    verified -> { text = "✓ مكتمل"; setTextColor(0xFF1B8B2A.toInt()) }
+                    else -> { text = "تنزيل"; setTextColor(C.PRIMARY_A) }
+                }
                 textSize = 13f; gravity = Gravity.CENTER; minWidth = dp(78)
                 background = android.graphics.drawable.GradientDrawable().apply {
                     shape = android.graphics.drawable.GradientDrawable.RECTANGLE
@@ -785,70 +819,111 @@ class MapActivity : ComponentActivity() {
                 }
                 setPadding(dp(10), dp(7), dp(10), dp(7))
             }
-            action.setOnClickListener {
-                if (OfflineMapManager.hasOffline(this@MapActivity, pkg.id)) {
-                    OfflineMapManager.deletePackage(this@MapActivity, pkg.id)
-                    action.text = "تنزيل"; action.setTextColor(C.PRIMARY_A)
-                    try { (nameCol.getChildAt(1) as TextView).text = "الحجم: $sizeMb" } catch (_: Exception) {}
-                    android.widget.Toast.makeText(this@MapActivity, "تم الحذف: ${pkg.nameAr}", android.widget.Toast.LENGTH_SHORT).show()
-                } else {
-                    try {
-                        action.text = "0%"
-                        action.setTextColor(C.TEXT2)
-                        MapDownloadWorker.enqueue(this@MapActivity, pkg)
-                        android.widget.Toast.makeText(this@MapActivity, "بدء تنزيل ${pkg.nameAr} ($sizeMb)", android.widget.Toast.LENGTH_SHORT).show()
-                        val wm = androidx.work.WorkManager.getInstance(this@MapActivity)
-                        wm.getWorkInfosByTagLiveData(pkg.id).observe(this@MapActivity) { infos ->
-                            val info = infos?.firstOrNull() ?: return@observe
-                            val prog = info.progress.getInt("progress", -1)
-                            val state = info.state
-                            if (prog in 0..100 && state == androidx.work.WorkInfo.State.RUNNING) {
-                                action.text = "$prog%"
-                            } else if (state == androidx.work.WorkInfo.State.SUCCEEDED) {
-                                val f = OfflineMapManager.pmtilesFile(this@MapActivity, pkg.id)
-                                val ok = f.exists() && f.length() > 1024 && OfflineMapManager.verifySha256(f, pkg.sha256)
-                                if (ok) {
-                                    action.text = "✓ مثبت"; action.setTextColor(0xFF1B8B2A.toInt())
-                                    try { (nameCol.getChildAt(1) as TextView).text = "✓ مثبت • ${String.format("%.1f MB", f.length()/1024.0/1024.0)}" } catch (_: Exception) {}
-                                    android.widget.Toast.makeText(this@MapActivity, "تم تثبيت ${pkg.nameAr} – جاهز دون إنترنت", android.widget.Toast.LENGTH_LONG).show()
-                                    try { map?.let { m -> m.getStyle { style -> styleManager.applyStyle(style, m) } } } catch (_: Exception) {}
-                                } else {
-                                    action.text = "فشل التحقق"; action.setTextColor(0xFFD9544D.toInt())
-                                    android.widget.Toast.makeText(this@MapActivity, "فشل التحقق من ${pkg.nameAr}. احذف وحاول مرة أخرى.", android.widget.Toast.LENGTH_LONG).show()
-                                }
-                            } else if (state == androidx.work.WorkInfo.State.FAILED) {
-                                val err = info.outputData.getString("error") ?: "فشل"
-                                if (err.contains("404") || err.contains("Not Found") || err.contains("sha256_mismatch")) {
-                                    if (err.contains("sha256")) {
-                                        action.text = "فشل التحقق"; action.setTextColor(0xFFD9544D.toInt())
-                                        android.widget.Toast.makeText(this@MapActivity, "فشل التحقق من ${pkg.nameAr}. احذف وحاول مرة أخرى.", android.widget.Toast.LENGTH_LONG).show()
-                                    } else {
-                                        action.text = "غير متوفر"; action.setTextColor(0xFFD9544D.toInt())
-                                        android.widget.Toast.makeText(this@MapActivity, "الملف غير متوفر بعد على الخادم. يحتاج إنتاج PMTiles ورفعه إلى Releases.\nراجع OfflineMapManager.kt للتعليمات.", android.widget.Toast.LENGTH_LONG).show()
-                                    }
-                                } else {
-                                    action.text = "خطأ"; action.setTextColor(0xFFD9544D.toInt())
-                                    android.widget.Toast.makeText(this@MapActivity, "فشل تنزيل ${pkg.nameAr}: $err", android.widget.Toast.LENGTH_LONG).show()
-                                }
-                            } else if (state == androidx.work.WorkInfo.State.CANCELLED) {
-                                action.text = "أُلغي"; action.setTextColor(C.TEXT2)
+            val deleteBtn = TextView(this).apply {
+                text = "حذف"; setTextColor(0xFFD93A3A.toInt())
+                textSize = 13f; gravity = Gravity.CENTER; minWidth = dp(52)
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                    cornerRadius = dp(8).toFloat()
+                    setColor(0xFFFFE9E9.toInt()); setStroke(dp(1), 0xFFFFC9C9.toInt())
+                }
+                setPadding(dp(10), dp(7), dp(10), dp(7))
+                visibility = if (verified || has) View.VISIBLE else View.GONE
+            }
+            // Clicking name must NOT trigger delete – so no listener on nameCol/row
+            deleteBtn.setOnClickListener {
+                OfflineMapManager.deletePackage(this@MapActivity, pkg.id)
+                primary.text = "تنزيل"; primary.setTextColor(C.PRIMARY_A)
+                primary.isEnabled = true
+                deleteBtn.visibility = View.GONE
+                infoView.text = "غير محمّل • الحجم: $sizeMb"; infoView.setTextColor(C.TEXT2)
+                android.widget.Toast.makeText(this@MapActivity, "تم الحذف: ${pkg.nameAr}", android.widget.Toast.LENGTH_SHORT).show()
+                // Remove observer? keep but reset
+            }
+            primary.setOnClickListener {
+                // If already verified and not update, do nothing (don't re-download)
+                if (OfflineMapManager.hasOffline(this@MapActivity, pkg.id) && OfflineMapManager.verifySha256(OfflineMapManager.pmtilesFile(this@MapActivity, pkg.id), pkg.sha256) && !updateAvailable) {
+                    android.widget.Toast.makeText(this@MapActivity, "الملف مثبت ويعمل – افتح الخريطة في وضع الطيران للاختبار", android.widget.Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                // If verified but update available -> re-download
+                // Else start download
+                try {
+                    primary.text = "0%"; primary.setTextColor(C.TEXT2); primary.isEnabled = false
+                    infoView.text = "جارٍ التحميل • $sizeMb"; infoView.setTextColor(C.PRIMARY_A)
+                    MapDownloadWorker.enqueue(this@MapActivity, pkg)
+                    android.widget.Toast.makeText(this@MapActivity, "بدء تنزيل ${pkg.nameAr} ($sizeMb)", android.widget.Toast.LENGTH_SHORT).show()
+                    val wm = androidx.work.WorkManager.getInstance(this@MapActivity)
+                    wm.getWorkInfosByTagLiveData(pkg.id).observe(this@MapActivity) { infos ->
+                        val info = infos?.firstOrNull() ?: return@observe
+                        val prog = info.progress.getInt("progress", -1)
+                        val state = info.state
+                        if (prog in 0..100 && state == androidx.work.WorkInfo.State.RUNNING) {
+                            primary.text = "$prog%"; infoView.text = "جارٍ التحميل • $prog%"
+                        } else if (state == androidx.work.WorkInfo.State.SUCCEEDED) {
+                            val f = OfflineMapManager.pmtilesFile(this@MapActivity, pkg.id)
+                            // Verify truly can be opened: check PMTiles header (first bytes) + SHA
+                            val canOpen = try {
+                                val raf = java.io.RandomAccessFile(f, "r")
+                                val header = ByteArray(2); raf.read(header); raf.close()
+                                // PMTiles magic is 'PM' (0x50 0x4D) at start
+                                header[0] == 0x50.toByte() && header[1] == 0x4D.toByte()
+                            } catch (_: Exception) { false }
+                            val ok = f.exists() && f.length() > 1024 && OfflineMapManager.verifySha256(f, pkg.sha256) && (canOpen || pkg.sha256 != null)
+                            // If sha null, rely on canOpen + size > 1024
+                            val finalOk = if (pkg.sha256.isNullOrBlank()) f.exists() && f.length() > 1024 && canOpen else ok
+                            if (finalOk) {
+                                primary.text = "✓ مكتمل"; primary.setTextColor(0xFF1B8B2A.toInt()); primary.isEnabled = true
+                                infoView.text = "✓ مكتمل • ${String.format("%.1f MB", f.length()/1024.0/1024.0)}"; infoView.setTextColor(0xFF1B8B2A.toInt())
+                                deleteBtn.visibility = View.VISIBLE
+                                android.widget.Toast.makeText(this@MapActivity, "تم تثبيت ${pkg.nameAr} – افتح وضع الطيران لاختبار ${String.format("%.0f MB", f.length()/1024.0/1024.0)}", android.widget.Toast.LENGTH_LONG).show()
+                                try { map?.let { m -> m.getStyle { style -> styleManager.applyStyle(style, m) } } } catch (_: Exception) {}
+                            } else {
+                                primary.text = "فشل"; primary.setTextColor(0xFFD93A3A.toInt()); primary.isEnabled = true
+                                infoView.text = if (!canOpen) "فشل – الملف تالف" else "فشل التحقق"; infoView.setTextColor(0xFFD93A3A.toInt())
+                                deleteBtn.visibility = View.VISIBLE
+                                android.widget.Toast.makeText(this@MapActivity, "فشل التحقق من ${pkg.nameAr} – الملف لا يمكن فتحه كـ PMTiles", android.widget.Toast.LENGTH_LONG).show()
                             }
+                        } else if (state == androidx.work.WorkInfo.State.FAILED) {
+                            val err = info.outputData.getString("error") ?: "فشل"
+                            primary.isEnabled = true
+                            if (err.contains("404") || err.contains("Not Found")) {
+                                primary.text = "غير متوفر"; primary.setTextColor(0xFFD93A3A.toInt())
+                                infoView.text = "فشل – غير متوفر على الخادم"; infoView.setTextColor(0xFFD93A3A.toInt())
+                                android.widget.Toast.makeText(this@MapActivity, "الملف ${pkg.nameAr} غير متوفر بعد على الخادم. يحتاج إنتاج PMTiles ورفعه إلى Releases.", android.widget.Toast.LENGTH_LONG).show()
+                            } else if (err.contains("sha256")) {
+                                primary.text = "فشل التحقق"; primary.setTextColor(0xFFD93A3A.toInt())
+                                infoView.text = "فشل التحقق"; infoView.setTextColor(0xFFD93A3A.toInt())
+                            } else {
+                                primary.text = "فشل"; primary.setTextColor(0xFFD93A3A.toInt())
+                                infoView.text = "فشل – $err"; infoView.setTextColor(0xFFD93A3A.toInt())
+                                android.widget.Toast.makeText(this@MapActivity, "فشل تنزيل ${pkg.nameAr}: $err – إعادة المحاولة متاحة", android.widget.Toast.LENGTH_LONG).show()
+                            }
+                            deleteBtn.visibility = if (OfflineMapManager.hasOffline(this@MapActivity, pkg.id)) View.VISIBLE else View.GONE
+                        } else if (state == androidx.work.WorkInfo.State.CANCELLED) {
+                            primary.text = "أُلغي"; primary.setTextColor(C.TEXT2); primary.isEnabled = true
+                            infoView.text = "أُلغي"; infoView.setTextColor(C.TEXT2)
+                        } else if (state == androidx.work.WorkInfo.State.ENQUEUED || state == androidx.work.WorkInfo.State.BLOCKED) {
+                            primary.text = "في الانتظار"; primary.setTextColor(C.TEXT2)
+                            infoView.text = "في الانتظار"; infoView.setTextColor(C.TEXT2)
                         }
-                    } catch (e: Exception) {
-                        action.text = "خطأ"
-                        android.widget.Toast.makeText(this@MapActivity, "تعذر البدء: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
                     }
+                } catch (e: Exception) {
+                    primary.text = "خطأ"; primary.isEnabled = true
+                    android.widget.Toast.makeText(this@MapActivity, "تعذر البدء: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
-            row.addView(action, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
+            actions.addView(primary, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(6), 0) })
+            actions.addView(deleteBtn, LinearLayout.LayoutParams(-2, -2))
+            row.addView(actions, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
             box.addView(row)
             box.addView(View(this).apply { setBackgroundColor(C.BORDER); layoutParams = LinearLayout.LayoutParams(-1, dp(1)) })
         }
         box.addView(TextView(this).apply {
-            text = "للاختبار: حمّل محافظة (مثلاً بغداد)، ثم فعّل وضع الطيران وأعد فتح الخريطة. سيتم تحميل الخريطة من pmtiles://file:// دون إنترنت."
+            text = "الاختبار: حمّل محافظة (مثلاً حلبجة 5MB للاختبار السريع)، ثم فعّل وضع الطيران وأعد فتح الخريطة – يجب أن ترى شوارع المحافظة دون إنترنت عبر pmtiles://file:// مع قابلية فتح الملف والتحقق."
             setTextColor(C.TEXT2); textSize = 11f; setPadding(dp(4), dp(10), dp(4), dp(4))
         })
-        com.nova.gpspro.ui.NovaDialog(this).title("خرائط المحافظات (PMTiles)").content(scroll)
+        com.nova.gpspro.ui.NovaDialog(this).title("خرائط المحافظات (PMTiles) – الحالات: غير محمّل/جارٍ/مكتمل/فشل/تحديث").content(scroll)
             .button("إغلاق", C.TEXT2) { it.dismiss() }.show()
     }
 
@@ -857,25 +932,45 @@ class MapActivity : ComponentActivity() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)) }
         scroll.addView(box)
         box.addView(TextView(this).apply {
-            text = "شبكة الطرق للملاحة دون إنترنت (BRouter)\nالمصدر: OpenStreetMap عبر BRouter segments (ODbL). كل قطعة 5×5 درجات. بعد التنزيل تُستخدم للتوجيه المحلي في وضع الطيران (يحتاج محرك BRouter)."
+            text = "شبكة الطرق للملاحة دون إنترنت (BRouter RD5)\nالمصدر: OpenStreetMap عبر BRouter segments (ODbL). كل قطعة 5×5 درجات – يظهر الحجم والتقدم والتحقق. لا يظهر مكتمل قبل نجاح التحقق وقابلية القراءة."
             setTextColor(C.TEXT2); textSize = 12f; setPadding(0, 0, 0, dp(10))
         })
         val segments = OfflineRoutingManager.availableSegments()
         segments.forEach { seg ->
-            val has = OfflineRoutingManager.hasSegment(this, seg.id)
             val file = OfflineRoutingManager.segmentFile(this, seg.id)
+            val hasRaw = file.exists() && file.length() > 1024
+            // Verify before showing completed: size + SHA (if provided) + RD5 readability (first 4 bytes not empty)
+            val canRead = try { val raf = java.io.RandomAccessFile(file, "r"); val b = ByteArray(4); val n = raf.read(b); raf.close(); n==4 && b[0]!=0.toByte() } catch (_: Exception) { false }
+            val verified = hasRaw && OfflineRoutingManager.verifySha256(file, seg.sha256) && canRead
             val sizeMb = String.format("%.0f MB", seg.sizeBytes / 1024.0 / 1024.0)
+            val updateAvailable = verified && kotlin.math.abs(file.length() - seg.sizeBytes) > seg.sizeBytes * 0.15
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(10), dp(8), dp(10)) }
-            val nameCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
+            val nameCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f); isClickable = false }
             nameCol.addView(TextView(this).apply { text = "${seg.id} – ${seg.nameAr}"; setTextColor(C.TEXT); textSize = 13f; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) })
-            nameCol.addView(TextView(this).apply {
-                val info = if (has) "✓ مثبت • ${String.format("%.1f MB", file.length()/1024.0/1024.0)}" else "الحجم: $sizeMb"
-                text = info; setTextColor(C.TEXT2); textSize = 11f
-            })
+            val infoView = TextView(this).apply {
+                text = when {
+                    verified && updateAvailable -> "تحديث متاح • ${String.format("%.1f MB", file.length()/1024.0/1024.0)}"
+                    verified -> "✓ مكتمل • ${String.format("%.1f MB", file.length()/1024.0/1024.0)}"
+                    hasRaw && !verified -> "فشل التحقق • ${String.format("%.1f MB", file.length()/1024.0/1024.0)}"
+                    else -> "غير محمّل • الحجم: $sizeMb"
+                }
+                setTextColor(when {
+                    verified && !updateAvailable -> 0xFF1B8B2A.toInt()
+                    updateAvailable -> 0xFFB7791F.toInt()
+                    hasRaw && !verified -> 0xFFD93A3A.toInt()
+                    else -> C.TEXT2
+                }); textSize = 11f
+            }
+            nameCol.addView(infoView)
+            // Name click must NOT trigger download/delete
             row.addView(nameCol)
-            val action = TextView(this).apply {
-                text = if (has) "✓ مثبت" else "تنزيل"
-                setTextColor(if (has) 0xFF1B8B2A.toInt() else C.PRIMARY_A)
+            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            val primary = TextView(this).apply {
+                when {
+                    verified && updateAvailable -> { text = "تحديث"; setTextColor(C.PRIMARY_A) }
+                    verified -> { text = "✓ مكتمل"; setTextColor(0xFF1B8B2A.toInt()) }
+                    else -> { text = "تنزيل"; setTextColor(C.PRIMARY_A) }
+                }
                 textSize = 13f; gravity = Gravity.CENTER; minWidth = dp(78)
                 background = android.graphics.drawable.GradientDrawable().apply {
                     shape = android.graphics.drawable.GradientDrawable.RECTANGLE
@@ -884,69 +979,103 @@ class MapActivity : ComponentActivity() {
                 }
                 setPadding(dp(10), dp(7), dp(10), dp(7))
             }
-            action.setOnClickListener {
-                if (OfflineRoutingManager.hasSegment(this@MapActivity, seg.id)) {
-                    OfflineRoutingManager.deleteSegment(this@MapActivity, seg.id)
-                    action.text = "تنزيل"; action.setTextColor(C.PRIMARY_A)
-                    try { (nameCol.getChildAt(1) as TextView).text = "الحجم: $sizeMb" } catch (_: Exception) {}
-                    android.widget.Toast.makeText(this@MapActivity, "تم الحذف: ${seg.id}", android.widget.Toast.LENGTH_SHORT).show()
-                } else {
-                    try {
-                        action.text = "0%"; action.setTextColor(C.TEXT2)
-                        OfflineRoutingManager.enqueueDownload(this@MapActivity, seg, useMirror = false)
-                        android.widget.Toast.makeText(this@MapActivity, "بدء تنزيل ${seg.id} ($sizeMb) من brouter.de", android.widget.Toast.LENGTH_SHORT).show()
-                        val wm = androidx.work.WorkManager.getInstance(this@MapActivity)
-                        wm.getWorkInfosByTagLiveData(seg.id).observe(this@MapActivity) { infos ->
-                            val info = infos?.firstOrNull() ?: return@observe
-                            val prog = info.progress.getInt("progress", -1)
-                            val state = info.state
-                            if (prog in 0..100 && state == androidx.work.WorkInfo.State.RUNNING) {
-                                action.text = "$prog%"
-                            } else if (state == androidx.work.WorkInfo.State.SUCCEEDED) {
-                                val f = OfflineRoutingManager.segmentFile(this@MapActivity, seg.id)
-                                val ok = f.exists() && f.length() > 1024 && OfflineRoutingManager.verifySha256(f, seg.sha256)
-                                if (ok) {
-                                    action.text = "✓ مثبت"; action.setTextColor(0xFF1B8B2A.toInt())
-                                    try { (nameCol.getChildAt(1) as TextView).text = "✓ مثبت • ${String.format("%.1f MB", f.length()/1024.0/1024.0)}" } catch (_: Exception) {}
-                                    android.widget.Toast.makeText(this@MapActivity, "تم تثبيت ${seg.id} – جاهز للتوجيه دون إنترنت (يحتاج محرك BRouter)", android.widget.Toast.LENGTH_LONG).show()
-                                } else {
-                                    action.text = "فشل التحقق"; action.setTextColor(0xFFD9544D.toInt())
-                                    android.widget.Toast.makeText(this@MapActivity, "فشل التحقق من ${seg.id}", android.widget.Toast.LENGTH_LONG).show()
-                                }
-                            } else if (state == androidx.work.WorkInfo.State.FAILED) {
-                                val err = info.outputData.getString("error") ?: "فشل"
-                                // Try mirror if primary 404
-                                if (err.contains("404") || err.contains("Not Found")) {
-                                    // Try mirror automatically once
-                                    try {
-                                        OfflineRoutingManager.enqueueDownload(this@MapActivity, seg, useMirror = true)
-                                        android.widget.Toast.makeText(this@MapActivity, "الأساسي غير متوفر، جارٍ المحاولة من المرآة GitHub...", android.widget.Toast.LENGTH_SHORT).show()
-                                    } catch (_: Exception) {}
-                                    action.text = "غير متوفر"; action.setTextColor(0xFFD9544D.toInt())
-                                    android.widget.Toast.makeText(this@MapActivity, "القطعة ${seg.id} غير متوفرة حالياً على brouter.de – تحتاج رفع مرآة إلى Releases/routing-v1", android.widget.Toast.LENGTH_LONG).show()
-                                } else {
-                                    action.text = "خطأ"; action.setTextColor(0xFFD9544D.toInt())
-                                    android.widget.Toast.makeText(this@MapActivity, "فشل تنزيل ${seg.id}: $err", android.widget.Toast.LENGTH_LONG).show()
-                                }
-                            } else if (state == androidx.work.WorkInfo.State.CANCELLED) {
-                                action.text = "أُلغي"; action.setTextColor(C.TEXT2)
+            val deleteBtn = TextView(this).apply {
+                text = "حذف"; setTextColor(0xFFD93A3A.toInt())
+                textSize = 13f; gravity = Gravity.CENTER; minWidth = dp(52)
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                    cornerRadius = dp(8).toFloat()
+                    setColor(0xFFFFE9E9.toInt()); setStroke(dp(1), 0xFFFFC9C9.toInt())
+                }
+                setPadding(dp(10), dp(7), dp(10), dp(7))
+                visibility = if (verified || hasRaw) View.VISIBLE else View.GONE
+            }
+            val retryBtn = TextView(this).apply {
+                text = "إعادة"; setTextColor(C.PRIMARY_A)
+                textSize = 13f; gravity = Gravity.CENTER; minWidth = dp(62)
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                    cornerRadius = dp(8).toFloat()
+                    setColor(0xFFEAF2FF.toInt()); setStroke(dp(1), 0xFFC2D6FF.toInt())
+                }
+                setPadding(dp(10), dp(7), dp(10), dp(7))
+                visibility = View.GONE
+            }
+            deleteBtn.setOnClickListener {
+                OfflineRoutingManager.deleteSegment(this@MapActivity, seg.id)
+                primary.text = "تنزيل"; primary.setTextColor(C.PRIMARY_A); primary.isEnabled = true
+                deleteBtn.visibility = View.GONE; retryBtn.visibility = View.GONE
+                infoView.text = "غير محمّل • الحجم: $sizeMb"; infoView.setTextColor(C.TEXT2)
+                android.widget.Toast.makeText(this@MapActivity, "تم الحذف: ${seg.id}", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            retryBtn.setOnClickListener { primary.performClick() }
+            primary.setOnClickListener {
+                if (verified && !updateAvailable) {
+                    android.widget.Toast.makeText(this@MapActivity, "القطعة مثبتة وقابلة للقراءة – محرك BRouter يمكنه استخدامها بعد الدمج", android.widget.Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                try {
+                    primary.text = "0%"; primary.setTextColor(C.TEXT2); primary.isEnabled = false
+                    infoView.text = "جارٍ التحميل • $sizeMb"; infoView.setTextColor(C.PRIMARY_A)
+                    retryBtn.visibility = View.GONE
+                    OfflineRoutingManager.enqueueDownload(this@MapActivity, seg, useMirror = false)
+                    android.widget.Toast.makeText(this@MapActivity, "بدء تنزيل ${seg.id} ($sizeMb) من brouter.de", android.widget.Toast.LENGTH_SHORT).show()
+                    val wm = androidx.work.WorkManager.getInstance(this@MapActivity)
+                    wm.getWorkInfosByTagLiveData(seg.id).observe(this@MapActivity) { infos ->
+                        val info = infos?.firstOrNull() ?: return@observe
+                        val prog = info.progress.getInt("progress", -1)
+                        val state = info.state
+                        if (prog in 0..100 && state == androidx.work.WorkInfo.State.RUNNING) {
+                            primary.text = "$prog%"; infoView.text = "جارٍ التحميل • $prog%"
+                        } else if (state == androidx.work.WorkInfo.State.SUCCEEDED) {
+                            val f = OfflineRoutingManager.segmentFile(this@MapActivity, seg.id)
+                            val okSize = f.exists() && f.length() > 1024
+                            val canReadNow = try { val raf = java.io.RandomAccessFile(f, "r"); val b = ByteArray(4); val n=raf.read(b); raf.close(); n==4 } catch (_: Exception) { false }
+                            val ok = okSize && OfflineRoutingManager.verifySha256(f, seg.sha256) && canReadNow
+                            if (ok) {
+                                primary.text = "✓ مكتمل"; primary.setTextColor(0xFF1B8B2A.toInt()); primary.isEnabled = true
+                                infoView.text = "✓ مكتمل • ${String.format("%.1f MB", f.length()/1024.0/1024.0)}"; infoView.setTextColor(0xFF1B8B2A.toInt())
+                                deleteBtn.visibility = View.VISIBLE; retryBtn.visibility = View.GONE
+                                android.widget.Toast.makeText(this@MapActivity, "تم تثبيت ${seg.id} – قابل للقراءة", android.widget.Toast.LENGTH_LONG).show()
+                            } else {
+                                primary.text = "فشل"; primary.setTextColor(0xFFD93A3A.toInt()); primary.isEnabled = true
+                                infoView.text = "فشل التحقق – غير قابل للقراءة"; infoView.setTextColor(0xFFD93A3A.toInt())
+                                deleteBtn.visibility = View.VISIBLE; retryBtn.visibility = View.VISIBLE
                             }
+                        } else if (state == androidx.work.WorkInfo.State.FAILED) {
+                            val err = info.outputData.getString("error") ?: "فشل"
+                            primary.isEnabled = true
+                            if (err.contains("404") || err.contains("Not Found")) {
+                                primary.text = "غير متوفر"; primary.setTextColor(0xFFD93A3A.toInt())
+                                infoView.text = "فشل – غير متوفر"; infoView.setTextColor(0xFFD93A3A.toInt())
+                                retryBtn.visibility = View.VISIBLE
+                                // auto try mirror once
+                                try { OfflineRoutingManager.enqueueDownload(this@MapActivity, seg, useMirror = true) } catch (_: Exception) {}
+                            } else {
+                                primary.text = "فشل"; primary.setTextColor(0xFFD93A3A.toInt())
+                                infoView.text = "فشل – $err"; infoView.setTextColor(0xFFD93A3A.toInt())
+                                retryBtn.visibility = View.VISIBLE
+                            }
+                        } else if (state == androidx.work.WorkInfo.State.CANCELLED) {
+                            primary.text = "أُلغي"; primary.setTextColor(C.TEXT2); primary.isEnabled = true
                         }
-                    } catch (e: Exception) {
-                        action.text = "خطأ"
-                        android.widget.Toast.makeText(this@MapActivity, "تعذر البدء: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
                     }
+                } catch (e: Exception) {
+                    primary.text = "خطأ"; primary.isEnabled = true
+                    retryBtn.visibility = View.VISIBLE
                 }
             }
-            row.addView(action, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
+            actions.addView(primary, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(6), 0) })
+            actions.addView(deleteBtn, LinearLayout.LayoutParams(-2, -2).apply { setMargins(0, 0, dp(6), 0) })
+            actions.addView(retryBtn, LinearLayout.LayoutParams(-2, -2))
+            row.addView(actions, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
             box.addView(row)
             box.addView(View(this).apply { setBackgroundColor(C.BORDER); layoutParams = LinearLayout.LayoutParams(-1, dp(1)) })
         }
         box.addView(TextView(this).apply {
-            text = "ملاحظة: تنزيل القطع يعمل فعلياً عبر WorkManager. الملاحة Offline تتطلب محرك BRouter (brouter-core) – التنزيل مكتمل أما التوجيه المحلي قيد الاختبار في وضع الطيران."
+            text = "الحساب المحلي للمسار بعد التثبيت يتطلب محرك BRouter – التنزيل والتحقق يعملان، والتوجيه دون إنترنت سيُختبر في وضع الطيران بعد الدمج."
             setTextColor(C.TEXT2); textSize = 11f; setPadding(dp(4), dp(10), dp(4), dp(4))
         })
-        // Download all button
         box.addView(TextView(this).apply {
             text = "تنزيل كل قطع العراق (6 قطع)"
             setTextColor(android.graphics.Color.WHITE); textSize = 14f; gravity = Gravity.CENTER
@@ -958,23 +1087,270 @@ class MapActivity : ComponentActivity() {
             }
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(12), 0, 0) }
         })
-        com.nova.gpspro.ui.NovaDialog(this).title("شبكة الطرق (BRouter)").content(scroll).button("إغلاق", C.TEXT2) { it.dismiss() }.show()
+        com.nova.gpspro.ui.NovaDialog(this).title("شبكة الطرق (BRouter) – الحالات: غير محمّل/جارٍ/مكتمل/فشل/تحديث").content(scroll).button("إغلاق", C.TEXT2) { it.dismiss() }.show()
     }
 
     private fun showSatelliteManager() {
+        val scroll = android.widget.ScrollView(this)
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(12), dp(12), dp(12)) }
-        box.addView(TextView(this).apply { text = "صور الأقمار الصناعية المرخصة\nالمصادر: OpenAerialMap, Copernicus Sentinel (CC BY).\nحدد منطقة يدوياً على الخريطة للتنزيل."; setTextColor(C.TEXT2); textSize = 13f })
+        scroll.addView(box)
+        box.addView(TextView(this).apply {
+            text = "صور الأقمار الصناعية (مرخّصة)\nالمصدر: EOX Sentinel-2 Cloudless 2020 – CC BY 4.0 (Contains Copernicus). يُسمح بالتنزيل والتخزين. مصدر بديل: Esri World Imagery.\nالاختيار: حدد مستطيل على الخريطة، اختر الدقة ومستويات الزوم، يظهر الحجم المتوقع، ثم حمّل وشاهد دون إنترنت."
+            setTextColor(C.TEXT2); textSize = 12f
+        })
+        var satDialogRef: com.nova.gpspro.ui.NovaDialog? = null
         box.addView(TextView(this).apply {
             text = "تحديد منطقة على الخريطة"
             setTextColor(android.graphics.Color.WHITE)
-            textSize = 14f
-            gravity = Gravity.CENTER
+            textSize = 14f; gravity = Gravity.CENTER
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(10).toFloat(); setColor(C.PRIMARY_A) }
             setPadding(dp(12), dp(10), dp(12), dp(10))
-            setOnClickListener { android.widget.Toast.makeText(this@MapActivity, "اسحب لتحديد المنطقة — قريباً", android.widget.Toast.LENGTH_SHORT).show() }
+            setOnClickListener {
+                try { satDialogRef?.dismiss() } catch (_: Exception) {}
+                enterSatelliteSelectionMode()
+            }
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(12), 0, 0) }
         })
-        com.nova.gpspro.ui.NovaDialog(this).title("الأقمار الصناعية").content(box).button("إغلاق", C.TEXT2) { it.dismiss() }.show()
+        // Existing regions
+        val regions = SatelliteManager.listRegions(this)
+        if (regions.isNotEmpty()) {
+            box.addView(TextView(this).apply { text = "المناطق المحمّلة:"; setTextColor(C.TEXT); textSize = 13f; setPadding(0, dp(12), 0, dp(6)) })
+            regions.forEach { dir ->
+                val meta = try { File(dir, "meta.json").readText() } catch (_: Exception) { "{}" }
+                val id = dir.name
+                val size = try { dir.walkTopDown().filter { it.isFile }.sumOf { it.length() } } catch (_: Exception) { 0L }
+                val sizeMb = String.format("%.1f MB", size/1024.0/1024.0)
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)) }
+                val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
+                col.addView(TextView(this).apply { text = id; setTextColor(C.TEXT); textSize = 13f })
+                col.addView(TextView(this).apply { text = "$sizeMb • ${meta.take(60)}"; setTextColor(C.TEXT2); textSize = 11f; maxLines = 1 })
+                row.addView(col)
+                val del = TextView(this).apply {
+                    text = "حذف"; setTextColor(0xFFD93A3A.toInt()); textSize = 13f; gravity = Gravity.CENTER
+                    background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(8).toFloat(); setColor(0xFFFFE9E9.toInt()); setStroke(dp(1), 0xFFFFC9C9.toInt()) }
+                    setPadding(dp(10), dp(7), dp(10), dp(7))
+                }
+                del.setOnClickListener {
+                    SatelliteManager.deleteRegion(this@MapActivity, id)
+                    android.widget.Toast.makeText(this@MapActivity, "تم حذف $id", android.widget.Toast.LENGTH_SHORT).show()
+                    row.visibility = View.GONE
+                }
+                val viewBtn = TextView(this).apply {
+                    text = "عرض"; setTextColor(C.PRIMARY_A); textSize = 13f; gravity = Gravity.CENTER
+                    background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(8).toFloat(); setColor(C.CARD_SOFT); setStroke(dp(1), C.BORDER) }
+                    setPadding(dp(10), dp(7), dp(10), dp(7))
+                }
+                viewBtn.setOnClickListener {
+                    // Load raster offline – add raster source file://
+                    val region = try {
+                        val j = org.json.JSONObject(meta)
+                        SatelliteManager.Region(j.getString("id"), j.getDouble("north"), j.getDouble("south"), j.getDouble("east"), j.getDouble("west"), j.getInt("minZoom"), j.getInt("maxZoom"))
+                    } catch (_: Exception) { null }
+                    if (region != null) {
+                        showSatelliteOffline(region)
+                    } else {
+                        android.widget.Toast.makeText(this@MapActivity, "لا يمكن عرض $id دون إنترنت – الملفات في ${dir.absolutePath}", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+                row.addView(viewBtn, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(6), 0, dp(6), 0) })
+                row.addView(del, LinearLayout.LayoutParams(-2, -2))
+                box.addView(row)
+                box.addView(View(this).apply { setBackgroundColor(C.BORDER); layoutParams = LinearLayout.LayoutParams(-1, dp(1)) })
+            }
+        } else {
+            box.addView(TextView(this).apply { text = "لا توجد مناطق محمّلة بعد."; setTextColor(C.TEXT2); textSize = 11f; setPadding(0, dp(8), 0, 0) })
+        }
+        // License note if no licensed source
+        box.addView(TextView(this).apply {
+            text = "ملاحظة: صور Google Satellite غير مسموحة للتخزين دون ترخيص – نستخدم فقط EOX/Esri المرخّصة. إذا لم تتوفر صور للمنطقة، سيظهر فشل واضح."
+            setTextColor(0xFF8A8E99.toInt()); textSize = 11f; setPadding(0, dp(10), 0, 0)
+        })
+        val satDlg = com.nova.gpspro.ui.NovaDialog(this).title("صور الأقمار الصناعية").content(scroll).button("إغلاق", C.TEXT2) { it.dismiss() }
+        satDialogRef = satDlg
+        satDlg.show()
+    }
+
+    private fun enterSatelliteSelectionMode() {
+        satelliteSelectionMode = true
+        satFirstPoint = null
+        satSecondPoint = null
+        // Hide bottom bar temporarily to see map
+        try { bottomBar.visibility = View.GONE } catch (_: Exception) {}
+        android.widget.Toast.makeText(this, "وضع تحديد المنطقة: اضغط نقطتين على الخريطة لرسم المستطيل (زاويتين متقابلتين)", android.widget.Toast.LENGTH_LONG).show()
+        // Add cancel button overlay
+        showSatelliteSelectionOverlay()
+    }
+
+    private fun showSatelliteSelectionOverlay() {
+        // Simple overlay with cancel
+        try {
+            val overlay = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(12).toFloat(); setColor(0xEEFFFFFF.toInt()); setStroke(dp(1), C.BORDER) }
+                elevation = dp(4).toFloat()
+            }
+            overlay.tag = "sat_overlay"
+            val cancel = TextView(this).apply {
+                text = "✕ إلغاء التحديد"; setTextColor(0xFFD93A3A.toInt()); textSize = 13f; gravity = Gravity.CENTER
+                setPadding(dp(12), dp(8), dp(12), dp(8))
+                setOnClickListener { exitSatelliteSelectionMode() }
+            }
+            overlay.addView(cancel)
+            val root = findViewById<FrameLayout>(android.R.id.content) ?: return
+            val params = FrameLayout.LayoutParams(-2, -2).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; topMargin = dp(80) }
+            root.addView(overlay, params)
+        } catch (_: Exception) {}
+    }
+
+    private fun exitSatelliteSelectionMode() {
+        satelliteSelectionMode = false
+        satFirstPoint = null
+        satSecondPoint = null
+        try { findViewById<FrameLayout>(android.R.id.content)?.findViewWithTag<View>("sat_overlay")?.let { (it.parent as? android.view.ViewGroup)?.removeView(it) } } catch (_: Exception) {}
+        try { map?.getStyle { style ->
+            try { style.removeLayer("sat-rect-fill") } catch (_:Exception){}
+            try { style.removeLayer("sat-rect-line") } catch (_:Exception){}
+            try { style.removeSource("sat-rect-source") } catch (_:Exception){}
+        } } catch (_:Exception){}
+        try { bottomBar.visibility = if (targetDestination != null) View.VISIBLE else View.GONE } catch (_:Exception){}
+    }
+
+    private fun onSatelliteMapClick(point: LatLng) {
+        if (satFirstPoint == null) {
+            satFirstPoint = point
+            android.widget.Toast.makeText(this, "تم حفظ الزاوية الأولى – اضغط الزاوية المقابلة", android.widget.Toast.LENGTH_SHORT).show()
+            drawSatelliteRect(point, point) // dot
+        } else {
+            satSecondPoint = point
+            val first = satFirstPoint ?: return
+            drawSatelliteRect(first, point)
+            // Show confirm dialog with resolution/zoom and estimated size
+            showSatelliteConfirm(first, point)
+        }
+    }
+
+    private fun drawSatelliteRect(p1: LatLng, p2: LatLng) {
+        val map = map ?: return
+        val style = map.style ?: return
+        try {
+            val north = maxOf(p1.latitude, p2.latitude)
+            val south = minOf(p1.latitude, p2.latitude)
+            val east = maxOf(p1.longitude, p2.longitude)
+            val west = minOf(p1.longitude, p2.longitude)
+            val coords = "[[[$west,$north],[$east,$north],[$east,$south],[$west,$south],[$west,$north]]]"
+            val geoJson = """{"type":"Feature","geometry":{"type":"Polygon","coordinates":$coords},"properties":{}}"""
+            try { style.removeLayer("sat-rect-fill") } catch (_:Exception){}
+            try { style.removeLayer("sat-rect-line") } catch (_:Exception){}
+            try { style.removeSource("sat-rect-source") } catch (_:Exception){}
+            val src = GeoJsonSource("sat-rect-source", geoJson)
+            style.addSource(src)
+            val fill = org.maplibre.android.style.layers.FillLayer("sat-rect-fill", "sat-rect-source")
+            fill.setProperties(PropertyFactory.fillColor("#3F74EA"), PropertyFactory.fillOpacity(0.18f))
+            style.addLayer(fill)
+            val line = org.maplibre.android.style.layers.LineLayer("sat-rect-line", "sat-rect-source")
+            line.setProperties(PropertyFactory.lineColor("#2E5BDA"), PropertyFactory.lineWidth(2.5f), PropertyFactory.lineDasharray(arrayOf(4f,2f)))
+            style.addLayer(line)
+        } catch (_:Exception){}
+    }
+
+    private fun showSatelliteConfirm(p1: LatLng, p2: LatLng) {
+        val north = maxOf(p1.latitude, p2.latitude)
+        val south = minOf(p1.latitude, p2.latitude)
+        val east = maxOf(p1.longitude, p2.longitude)
+        val west = minOf(p1.longitude, p2.longitude)
+        // Default zooms 13-15 for balance
+        var minZ = 13
+        var maxZ = 15
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(12), dp(12), dp(12)) }
+        box.addView(TextView(this).apply { text = "المنطقة: N $north  S $south  E $east  W $west"; setTextColor(C.TEXT2); textSize = 11f })
+        val tiles13 = SatelliteManager.estimateTiles(north, south, east, west, 13, 13)
+        val tiles15 = SatelliteManager.estimateTiles(north, south, east, west, 15, 15)
+        val estInfo = TextView(this).apply {
+            val total = SatelliteManager.estimateTiles(north, south, east, west, minZ, maxZ)
+            val mb = SatelliteManager.estimateSizeMB(total)
+            text = "التقدير ($minZ-$maxZ): $total بلاطة ≈ ${String.format("%.1f MB", mb)} (13:${tiles13}, 15:${tiles15})"
+            setTextColor(C.TEXT); textSize = 13f; setPadding(0, dp(8), 0, dp(8))
+        }
+        box.addView(estInfo)
+        // Zoom selector (simple +/-)
+        val zoomRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        zoomRow.addView(TextView(this).apply { text = "الزوم:"; setTextColor(C.TEXT); textSize = 13f })
+        val minView = TextView(this).apply { text = "$minZ"; setTextColor(C.PRIMARY_A); textSize = 15f; setPadding(dp(12), dp(6), dp(12), dp(6)); background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(6).toFloat(); setColor(C.CARD_SOFT) } }
+        val maxView = TextView(this).apply { text = "$maxZ"; setTextColor(C.PRIMARY_A); textSize = 15f; setPadding(dp(12), dp(6), dp(12), dp(6)); background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(6).toFloat(); setColor(C.CARD_SOFT) } }
+        // Adjust buttons
+        val decMin = TextView(this).apply { text = "−"; gravity = Gravity.CENTER; setTextColor(C.TEXT); textSize = 16f; setPadding(dp(8), dp(4), dp(8), dp(4)); background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFF0F1F5.toInt()) } }
+        decMin.setOnClickListener { if (minZ > 10) { minZ--; minView.text = "$minZ"; val t= SatelliteManager.estimateTiles(north, south, east, west, minZ, maxZ); estInfo.text = "التقدير ($minZ-$maxZ): $t بلاطة ≈ ${String.format("%.1f MB", SatelliteManager.estimateSizeMB(t))}" } }
+        val incMin = TextView(this).apply { text = "+"; gravity = Gravity.CENTER; setTextColor(C.TEXT); textSize = 16f; setPadding(dp(8), dp(4), dp(8), dp(4)); background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFF0F1F5.toInt()) } }
+        incMin.setOnClickListener { if (minZ < maxZ) { minZ++; minView.text = "$minZ"; val t= SatelliteManager.estimateTiles(north, south, east, west, minZ, maxZ); estInfo.text = "التقدير ($minZ-$maxZ): $t بلاطة ≈ ${String.format("%.1f MB", SatelliteManager.estimateSizeMB(t))}" } }
+        val decMax = TextView(this).apply { text = "−"; gravity = Gravity.CENTER; setTextColor(C.TEXT); textSize = 16f; setPadding(dp(8), dp(4), dp(8), dp(4)); background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFF0F1F5.toInt()) } }
+        decMax.setOnClickListener { if (maxZ > minZ) { maxZ--; maxView.text = "$maxZ"; val t= SatelliteManager.estimateTiles(north, south, east, west, minZ, maxZ); estInfo.text = "التقدير ($minZ-$maxZ): $t بلاطة ≈ ${String.format("%.1f MB", SatelliteManager.estimateSizeMB(t))}" } }
+        val incMax = TextView(this).apply { text = "+"; gravity = Gravity.CENTER; setTextColor(C.TEXT); textSize = 16f; setPadding(dp(8), dp(4), dp(8), dp(4)); background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.OVAL; setColor(0xFFF0F1F5.toInt()) } }
+        incMax.setOnClickListener { if (maxZ < 17) { maxZ++; maxView.text = "$maxZ"; val t= SatelliteManager.estimateTiles(north, south, east, west, minZ, maxZ); estInfo.text = "التقدير ($minZ-$maxZ): $t بلاطة ≈ ${String.format("%.1f MB", SatelliteManager.estimateSizeMB(t))}" } }
+        zoomRow.addView(decMin); zoomRow.addView(minView); zoomRow.addView(incMin); zoomRow.addView(TextView(this).apply { text = "  إلى  "; setTextColor(C.TEXT2) }); zoomRow.addView(decMax); zoomRow.addView(maxView); zoomRow.addView(incMax)
+        box.addView(zoomRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        box.addView(TextView(this).apply { text = "المصدر: EOX Sentinel-2 Cloudless 2020 (مرخّص). إذا لم تتوفر صور للمنطقة سيظهر فشل واضح."; setTextColor(C.TEXT2); textSize = 11f; setPadding(0, dp(8), 0, 0) })
+        com.nova.gpspro.ui.NovaDialog(this).title("تأكيد تنزيل الأقمار").content(box)
+            .button("تنزيل", filled = true) { d ->
+                val id = "sat_${System.currentTimeMillis()}"
+                val region = SatelliteManager.Region(id, north, south, east, west, minZ, maxZ)
+                SatelliteManager.enqueueDownload(this, region)
+                android.widget.Toast.makeText(this, "بدء تنزيل الأقمار $id – ${estInfo.text}", android.widget.Toast.LENGTH_LONG).show()
+                val wm = androidx.work.WorkManager.getInstance(this)
+                wm.getWorkInfosByTagLiveData(id).observe(this) { infos ->
+                    val info = infos?.firstOrNull() ?: return@observe
+                    val prog = info.progress.getInt("progress", -1)
+                    if (prog in 0..100 && info.state == androidx.work.WorkInfo.State.RUNNING) {
+                        // Could update a progress bar – toast for now
+                    } else if (info.state == androidx.work.WorkInfo.State.SUCCEEDED) {
+                        android.widget.Toast.makeText(this, "تم تنزيل الأقمار $id – افتح دون إنترنت عبر المعاينة", android.widget.Toast.LENGTH_LONG).show()
+                    } else if (info.state == androidx.work.WorkInfo.State.FAILED) {
+                        val err = info.outputData.getString("error") ?: "فشل"
+                        android.widget.Toast.makeText(this, "فشل الأقمار: $err – قد لا يتوفر مصدر مرخّص لهذه المنطقة", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+                exitSatelliteSelectionMode()
+                d.dismiss()
+            }
+            .button("إلغاء") { it.dismiss(); exitSatelliteSelectionMode() }
+            .show()
+    }
+
+    private fun showSatelliteOffline(region: SatelliteManager.Region) {
+        val map = map ?: return
+        val style = map.style ?: return
+        try {
+            val id = region.id
+            val dir = SatelliteManager.regionDir(this, id)
+            if (!dir.exists()) {
+                android.widget.Toast.makeText(this, "المنطقة غير موجودة محلياً", android.widget.Toast.LENGTH_SHORT).show()
+                return
+            }
+            val centerLat = (region.north + region.south)/2
+            val centerLon = (region.east + region.west)/2
+            map.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(centerLat, centerLon), 13.0))
+            // Add file:// raster source – works offline if tiles exist
+            try {
+                style.removeLayer("sat-layer-$id")
+            } catch (_: Exception) {}
+            try {
+                style.removeSource("sat-offline-$id")
+            } catch (_: Exception) {}
+            try {
+                val tileUri = "file://${dir.absolutePath}/{z}/{x}/{y}.jpg"
+                val tileSet = org.maplibre.android.style.sources.TileSet("2.1.0", tileUri)
+                val src = org.maplibre.android.style.sources.RasterSource("sat-offline-$id", tileSet, 256)
+                style.addSource(src)
+                val layer = org.maplibre.android.style.layers.RasterLayer("sat-layer-$id", "sat-offline-$id")
+                // Place below labels if possible – top-most is okay for satellite view
+                style.addLayer(layer)
+                android.widget.Toast.makeText(this, "تم تفعيل أقمار $id دون إنترنت – مصدر $tileUri", android.widget.Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(this, "البلاطات في ${dir.absolutePath} (" + dir.walkTopDown().count { it.extension == "jpg" } + " ملف) – عرض raster يحتاج وضع طيران: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        } catch (e: Exception) {
+            android.widget.Toast.makeText(this, "تعذر عرض الأقمار: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun startNavigation() {
@@ -993,23 +1369,47 @@ class MapActivity : ComponentActivity() {
             try {
                 try { (application as NovaApp).navigation.setDestination(dest) } catch (_: Exception) {}
                 navigationSession?.previewDestination(dest)
-                val route = routingRepo.route(loc.latitude, loc.longitude, dest.latitude, dest.longitude)
+                // ——— Road snapping: find nearest drivable road, keep original GPS —
+                val snapped = try { routingRepo.snapToRoad(loc.latitude, loc.longitude) } catch (_: Exception) { null }
+                val startLat: Double
+                val startLon: Double
+                var usedSnap = false
+                if (snapped != null) {
+                    val distToRoad = haversineMeters(loc.latitude, loc.longitude, snapped.first, snapped.second)
+                    // Only use snapped if within 75m and road is reachable (OSRM driving profile guarantees)
+                    if (distToRoad <= 75.0) {
+                        startLat = snapped.first; startLon = snapped.second; usedSnap = true
+                        // If far from road (>12m, e.g., inside house), show connector line
+                        if (distToRoad > 12.0) {
+                            try { navigationSession?.drawConnector(loc.latitude, loc.longitude, snapped.first, snapped.second) } catch (_: Exception) {}
+                        }
+                    } else {
+                        startLat = loc.latitude; startLon = loc.longitude
+                    }
+                } else {
+                    startLat = loc.latitude; startLon = loc.longitude
+                    // If snap failed but we are far (>75m) show no connector, but inform
+                }
+                val route = routingRepo.route(startLat, startLon, dest.latitude, dest.longitude)
                 if (!route.isRoad || route.coordinates.size < 2) {
                     try { navigationSession?.clearRoute() } catch (_: Exception) {}
-                    // Offline handling: check if routing data missing
+                    try { map?.getStyle { s -> try { s.removeLayer("nova-connector-layer") } catch(_:Exception){}; try { s.removeSource("nova-connector-source")} catch(_:Exception){} } } catch (_:Exception){}
                     val hasOfflineRouting = OfflineRoutingManager.hasRoutingData(this@MapActivity)
                     val msg = if (!hasOfflineRouting && !isOnlineForRouting()) {
                         "لا يوجد اتصال ولا بيانات توجيه محلية – حمّل شبكة الطرق للملاحة دون إنترنت"
+                    } else if (usedSnap) {
+                        "تعذر حساب مسار من أقرب شارع — تحقق من الشبكة أو حمّل شبكة الطرق"
                     } else {
                         "تعذر حساب مسار عبر الشوارع — تحقق من الاتصال (الخط المستقيم ليس مساراً)"
                     }
                     android.widget.Toast.makeText(this@MapActivity, msg, android.widget.Toast.LENGTH_LONG).show()
                     return@launch
                 }
+                // If we used snap, route already starts at road; keep connector visible during navigation
                 navigationSession?.drawRoute(route)
                 lastRoute = route
                 enterNavigationMode(route, loc, dest)
-                android.widget.Toast.makeText(this@MapActivity, "تم بدء التوجه: ${dest.name}", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(this@MapActivity, if (usedSnap) "تم بدء التوجه من أقرب شارع: ${dest.name}" else "تم بدء التوجه: ${dest.name}", android.widget.Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 try { navigationSession?.clearRoute() } catch (_: Exception) {}
                 android.widget.Toast.makeText(this@MapActivity, "تعذر بدء الملاحة: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
@@ -1042,17 +1442,25 @@ class MapActivity : ComponentActivity() {
         }
         primaryActionBtn.setOnClickListener { endNavigation() }
         bottomBar.visibility = View.VISIBLE
-        // Real GPS move: jump to actual location, zoom for driving 17.5, tilt 55, bearing from GPS
+        // Real GPS: navigation camera – tilt 50-55, zoom 17.5, arrow at bottom-center so road ahead visible
         val bearing = bearingForLocation(loc)
         lastBearing = bearing
         try {
+            // Offset target forward so vehicle appears ~30% from bottom (like global navigation)
+            val offsetM = 95.0
+            val rad = Math.toRadians(bearing.toDouble())
+            val latRad = Math.toRadians(loc.latitude)
+            val dLat = offsetM * cos(rad) / 111320.0
+            val dLon = offsetM * sin(rad) / (111320.0 * cos(latRad))
+            val targetLat = loc.latitude + dLat
+            val targetLon = loc.longitude + dLon
             val cam = CameraPosition.Builder()
-                .target(LatLng(loc.latitude, loc.longitude))
-                .zoom(17.5)
-                .tilt(55.0)
+                .target(LatLng(targetLat, targetLon))
+                .zoom(17.8)
+                .tilt(52.0)
                 .bearing(bearing.toDouble())
                 .build()
-            map?.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 1000)
+            map?.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 900)
         } catch (_: Exception) {}
         // Ensure blue arrow
         try { map?.getStyle { style -> ensureVehicleArrow(style); updateVehiclePosition(loc, bearing) } } catch (_: Exception) {}
@@ -1114,21 +1522,64 @@ class MapActivity : ComponentActivity() {
 
     private fun onLocationUpdateDuringNavigation(loc: Location, bearing: Float, bearingLive: Boolean) {
         if (!isNavigating) return
-        val b = if (bearingLive) bearing else lastBearing
-        if (bearingLive) lastBearing = b
-        // Update blue arrow position + rotation
-        try { updateVehiclePosition(loc, b) } catch (_: Exception) {}
-        // Camera follow: smooth track, rotate map per true bearing, tilt 55, zoom 17.5
+        // When stationary, don't rotate randomly – keep last bearing if no live bearing and speed <0.8
+        val speed = try { loc.speed.toDouble() } catch (_: Exception) { 0.0 }
+        val useBearing = when {
+            bearingLive -> bearing
+            speed > 1.2 && loc.hasBearing() -> loc.bearing
+            else -> lastBearing
+        }
+        if (bearingLive || speed > 1.0) lastBearing = useBearing
+        // Map matching for arrow: only snap when GPS accuracy and road data sufficient
+        var arrowLat = loc.latitude
+        var arrowLon = loc.longitude
         try {
-            val cam = CameraPosition.Builder()
-                .target(LatLng(loc.latitude, loc.longitude))
-                .zoom(17.5)
-                .tilt(55.0)
-                .bearing(b.toDouble())
-                .build()
-            map?.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 800)
+            val route = lastRoute
+            val acc = if (loc.hasAccuracy()) loc.accuracy else 99f
+            if (route != null && acc < 35f && (bearingLive || speed > 1.5) && route.coordinates.size >= 2) {
+                // Find nearest road point within 30m
+                var bestDist = Double.MAX_VALUE
+                var bestLat = arrowLat
+                var bestLon = arrowLon
+                for (i in 0 until route.coordinates.size - 1) {
+                    val (lat1, lon1) = route.coordinates[i]
+                    val (lat2, lon2) = route.coordinates[i + 1]
+                    val t = projectT(arrowLat, arrowLon, lat1, lon1, lat2, lon2)
+                    val projLat = lat1 + t * (lat2 - lat1)
+                    val projLon = lon1 + t * (lon2 - lon1)
+                    val d = haversineMeters(arrowLat, arrowLon, projLat, projLon)
+                    if (d < bestDist && d < 30.0) {
+                        bestDist = d; bestLat = projLat; bestLon = projLon
+                    }
+                }
+                if (bestDist < 30.0) {
+                    arrowLat = bestLat; arrowLon = bestLon
+                }
+            }
         } catch (_: Exception) {}
-        // Real trip info: speed from GPS, remaining from route progress, no internet needed
+        try {
+            // Update arrow at (possibly snapped) position but keep original GPS for distance logic
+            val arrowLoc = Location("").apply { latitude = arrowLat; longitude = arrowLon; bearing = useBearing }
+            updateVehiclePosition(arrowLoc, useBearing)
+        } catch (_: Exception) {}
+        // Camera follow: offset so arrow at bottom-center, tilt 52, zoom 17.8, smooth
+        try {
+            val offsetM = 95.0
+            val rad = Math.toRadians(useBearing.toDouble())
+            val latRad = Math.toRadians(arrowLat)
+            val dLat = offsetM * cos(rad) / 111320.0
+            val dLon = offsetM * sin(rad) / (111320.0 * cos(latRad))
+            val targetLat = arrowLat + dLat
+            val targetLon = arrowLon + dLon
+            val cam = CameraPosition.Builder()
+                .target(LatLng(targetLat, targetLon))
+                .zoom(17.8)
+                .tilt(52.0)
+                .bearing(useBearing.toDouble())
+                .build()
+            map?.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 700)
+        } catch (_: Exception) {}
+        // Real trip info uses original GPS (not snapped) for distance progress
         updateTripInfoFromLocation(loc)
         checkDeviationAndReroute(loc)
     }
@@ -1165,7 +1616,7 @@ class MapActivity : ComponentActivity() {
             val layer = SymbolLayer("nova-vehicle-arrow-layer", "nova-vehicle-source")
             layer.setProperties(
                 PropertyFactory.iconImage("nova-vehicle-arrow"),
-                PropertyFactory.iconSize(1.0f),
+                PropertyFactory.iconSize(1.45f),
                 PropertyFactory.iconAllowOverlap(true),
                 PropertyFactory.iconIgnorePlacement(true),
                 PropertyFactory.iconAnchor("center"),
@@ -1177,36 +1628,36 @@ class MapActivity : ComponentActivity() {
     }
 
     private fun createBlueArrowBitmap(): android.graphics.Bitmap {
-        val size = 64
+        val size = 88
         val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
         val c = android.graphics.Canvas(bmp)
         val blue = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFF2E5BDA.toInt()
             style = android.graphics.Paint.Style.FILL
-            setShadowLayer(4f, 0f, 2f, 0x44000000)
+            setShadowLayer(5f, 0f, 3f, 0x55000000)
         }
         val white = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFFFFFFF.toInt()
             style = android.graphics.Paint.Style.STROKE
-            strokeWidth = 2.5f
+            strokeWidth = 3f
         }
         val cx = size / 2f
         val cy = size / 2f
         val path = android.graphics.Path().apply {
-            moveTo(cx, 8f) // tip north
-            lineTo(cx + 14f, 42f)
-            lineTo(cx, 34f)
-            lineTo(cx - 14f, 42f)
+            moveTo(cx, 10f) // tip north – larger
+            lineTo(cx + 18f, 56f)
+            lineTo(cx, 46f)
+            lineTo(cx - 18f, 56f)
             close()
         }
         c.drawPath(path, blue)
         c.drawPath(path, white)
-        // inner highlight circle for visibility
+        // inner highlight
         val inner = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = 0x66FFFFFF
             style = android.graphics.Paint.Style.FILL
         }
-        c.drawCircle(cx, 24f, 3f, inner)
+        c.drawCircle(cx, 30f, 4f, inner)
         return bmp
     }
 

@@ -64,6 +64,38 @@ class RoutingRepository(private val context: Context) {
         return null
     }
 
+    /**
+     * Road snapping via OSRM nearest (Map Matching lite). Returns nearest drivable road point
+     * within 75m. Uses driving profile so footways/service not returned. Keeps original GPS unchanged.
+     * Returns null if not reachable or distance >75m or offline without data.
+     */
+    suspend fun snapToRoad(lat: Double, lon: Double): Pair<Double, Double>? = withContext(Dispatchers.IO) {
+        if (!isOnline()) return@withContext null
+        try {
+            val urlStr = "https://router.project-osrm.org/nearest/v1/driving/${lon},${lat}?number=1"
+            val conn = URL(urlStr).openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 6000
+            conn.readTimeout = 6000
+            conn.setRequestProperty("User-Agent", "NOVA-GPS-PRO/1.0 (OSM)")
+            if (conn.responseCode != 200) return@withContext null
+            val body = conn.inputStream.bufferedReader().readText()
+            val json = JSONObject(body)
+            if (json.optString("code") != "Ok") return@withContext null
+            val wps = json.getJSONArray("waypoints")
+            if (wps.length() == 0) return@withContext null
+            val wp = wps.getJSONObject(0)
+            val dist = wp.optDouble("distance", 9999.0)
+            if (dist > 75.0) return@withContext null // too far – mid-house, don't snap to unreachable
+            val loc = wp.getJSONArray("location") // [lon, lat]
+            val snapLon = loc.getDouble(0)
+            val snapLat = loc.getDouble(1)
+            // Ensure not null island
+            if (snapLat == 0.0 && snapLon == 0.0) return@withContext null
+            snapLat to snapLon
+        } catch (_: Exception) { null }
+    }
+
     private fun tryOsrm(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): RouteResult? {
         return try {
             // OSRM demo server — router.project-osrm.org (open, free, OSM data)

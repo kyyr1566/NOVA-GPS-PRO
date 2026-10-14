@@ -107,7 +107,31 @@ class NavigationSessionManager(
             style.removeLayer("nova-route-layer")
             style.removeSource("nova-route-source")
         } catch (_: Exception) {}
+        try { style.removeLayer("nova-connector-layer") } catch (_: Exception) {}
+        try { style.removeSource("nova-connector-source") } catch (_: Exception) {}
         currentRoute = null
+    }
+
+    fun drawConnector(gpsLat: Double, gpsLon: Double, roadLat: Double, roadLon: Double) {
+        val m = map ?: return
+        val style = m.style ?: return
+        try {
+            style.removeLayer("nova-connector-layer")
+            style.removeSource("nova-connector-source")
+            val geoJson = """{"type":"Feature","geometry":{"type":"LineString","coordinates":[[$gpsLon,$gpsLat],[$roadLon,$roadLat]]},"properties":{}}"""
+            val src = GeoJsonSource("nova-connector-source", geoJson)
+            style.addSource(src)
+            val layer = LineLayer("nova-connector-layer", "nova-connector-source")
+            layer.setProperties(
+                PropertyFactory.lineColor("#FFA500"),
+                PropertyFactory.lineWidth(2.5f),
+                PropertyFactory.lineOpacity(0.85f),
+                PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND),
+                PropertyFactory.lineDasharray(arrayOf(3f, 3f))
+            )
+            style.addLayer(layer)
+        } catch (_: Exception) {}
     }
 
     fun currentDestination(): Triple<Double, Double, String?>? {
