@@ -18,9 +18,9 @@
 | 7 | `topo` | الطبوغرافية وخطوط الارتفاعات | Raster | `https://{a,b,c}.tile.opentopomap.org/{z}/{x}/{y}.png` (OpenTopoMap) | CC BY-SA 3.0 | مسموح مع نسب | كنتور وارتفاعات `maxzoom 17` |
 | 8 | `navigation` | الطرق والملاحة | Vector | OpenFreeMap مع إبراز الطرق | BSD + ODbL | مسموح | خلفية `#EAF0F8` |
 
-**الصور الفضائية:** Esri World Imagery (Maxar) مجاني للعرض المباشر ويتحمل آلاف المستخدمين مع Rate Limit معقول، بينما EOX Sentinel-2 أقل دقة فجعلناه احتياطياً. Google Satellite غير مستخدم لأنه يمنع التخزين بدون ترخيص.
+**الصور الفضائية – تشخيص “Map data not yet available”:** السبب ليس خطأً في التطبيق بل **overzoom رقمي**: مصدر Esri World Imagery مجاني بدقة عالية يغطي العراق كاملاً حتى `maxzoom 19 / tile 256` (≈ 0.3m في المدن). عند التكبير إلى `z20+` لا توجد بلاطات، فالخادم يعيد بلاطة 404 عليها النص “Map data not yet available”. الحل: **قفل الكاميرا عند `maxZoom 19` للقمر والهجين و `17` للطبوغرافي** (`MapLibreMap.setMaxZoomPreference`) لمنع التشويش/التكبير الرقمي المشوش. للعراق لا يوجد مصدر مجاني أعلى من 19 بجودة شارع-بيت بدون تشويش — الأعلى يتطلب اشتراكاً مدفوعاً (MapTiler Satellite `z20-22` بدقة 0.15m أو Maxar SecureWatch). جرى الحفاظ على السرعة عبر عدم تحميل بلاطات خارج النطاق، وEsri يتحمل آلاف المستخدمين مع Rate Limit معقول؛ بينما EOX Sentinel-2 (10m) أقل دقة فلا يستخدم كبديل للقمر. Google Satellite غير مستخدم لأنه يمنع التخزين بدون ترخيص.
 
-**2D/3D:** كل Vector تدعم `FillExtrusion` للمباني: `building-3d` يستخدم `coalesce(get render_height, get height, * get levels 3.5, 6)` مع `fillExtrusionOpacity 0.88` في 3D و `NONE` في 2D.
+**2D/3D:** كل Vector تدعم `FillExtrusion` للمباني: `building-3d` يستخدم `coalesce(get render_height, get height, * get levels 3.5, 6)` مع `fillExtrusionOpacity 0.88` في 3D و `NONE` في 2D. زر `3D` منفصل عن زر الطبقات – لا طبقات مكررة.
 
 ## 2) محرك التوجيه (Routing) – Online فقط
 
@@ -47,18 +47,20 @@
 - مكتبة `androidx.work:work-runtime-ktx` – إزالة من `build.gradle.kts`.
 - لا حذف للمواقع المحفوظة ولا لنظام GPS/السهم الأصلي (`ArrowEngine`, `DestinationRepository` بقيت).
 
-## 4) أدوات الخريطة الجديدة (يمين عمودي، أزرق NOVA)
+## 4) أدوات الخريطة الجديدة (يمين عمودي فعلي، أزرق NOVA – إصلاح RTL)
 
-`sideCol` على `Gravity.END|CENTER_VERTICAL` مع `topMargin 90dp` و `bottomMargin 90dp` و `marginEnd 10dp` – لا يغطي الخريطة.
-الترتيب: **تكبير (+) → تصغير (−) → موقعي (◎) → البوصلة (◉) → الطبقات (⬢) → 2D/3D** – كل زر دائري 42dp بصري / 52dp لمس، خلفية `C.PRIMARY_A` (أزرق NOVA #2856BC)، نص أبيض، `elevation 2dp`, Ripple.
+`sideCol` على `Gravity.RIGHT|CENTER_VERTICAL` مع `layoutDirection LTR` إجباري – حتى في الوضع العربي (RTL) تبقى الأزرار على اليمين الفعلي (لا `END` المنعكس). `topMargin 90dp` و `bottomMargin 90dp` و `rightMargin 12dp`.
+الترتيب: **تكبير (+) → تصغير (−) → موقعي (◎) → البوصلة (◉) → الطبقات (⬢) → 2D/3D** – كل زر دائري **48dp بصري / 56dp لمس** (مطابق للمواصفة 44–56dp)، خلفية `C.PRIMARY_A` (أزرق NOVA #2856BC)، أيقونة بيضاء **16sp** أكبر، `elevation 4dp`, Ripple, مسافة منتظمة **6dp** بلا تداخل. زر الطبقات الآن يفتح **قائمة اختيار أنيقة** (8 طبقات + مؤشر ✓) لا يغير تلقائياً.
 
 **موقعي:** `centerToMyLocation()` → `LocationEngine.awaitFreshLocation()` → `animateCamera 16.0`.
+**الكاميرا:** منظور قيادة حقيقي `tilt 45–50°` + `zoom ذكي 15.5–17.5 حسب السرعة` (أبطأ=أقرب، أسرع=أوسع) + `offset 75m` سهم أسفل المنتصف + تثبيت Bearing عند التوقف + Follow Camera سلس بلا قفزات.
 
 ## 5) الاختبارات
 
 - `testDebugUnitTest` محدثة: 8 طبقات، عدم وجود `OfflineMapManager`, توفر `RoutingProvider`, haversine, ألوان.
 - `assembleDebug` – يبني بدون PMTiles.
-- يدوي: تبديل 8 طبقات يحافظ على الكاميرا/المسار، 2D/3D مباني بارتفاعات، تكبير/دوران، كاميرا ملاحة tilt 52 zoom 17.8 offset 95m، سهم أزرق 88px/1.45.
+- يدوي (خطة جهاز حقيقي): سهم أزرق 48dp/144px لا يختفي تحت المسار، بداية المسار من أقرب شارع مع وصلة برتقالية إذا داخل البيت، كاميرا ملاحة `tilt 45–50 zoom 15.8–17.0 offset 75m` سلسة وتثبت عند التوقف، سرعة/مسافة/ETA من GPS حقيقي، 6 أزرار يمين فعلي (RTL) بلا تداخل، اختيار طبقات أنيق 8، جودة قمر عند `z19` مع منع `z20` المشوش.
+- CI: GitHub Actions `assembleDebug` يبني APK ويُحمّل Artifact `app-debug.apk` – لا يُعتبر نجاح البناء وحده دليل عمل القمر/GPS دون اختبار جهاز حقيقي.
 
 ---
 **الخلاصة القانونية:** كل المصادر تسمح بالاستخدام التجاري مع نسب OSM/Esri/OpenTopoMap. Esri/Terrarium/OpenTopoMap مجانية للعرض لكن ليست بلا حدود – لـ 10k يومياً يجب Cache أو استضافة ذاتية. لا Google API مدفوع إجباري.
