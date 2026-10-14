@@ -262,12 +262,22 @@ class MapActivity : ComponentActivity() {
         val zoomOutBtn = smallIconButton("−", "تصغير") { map?.animateCamera(CameraUpdateFactory.zoomOut()) }
         val modeBtn = smallIconButton("◐", "وضع الاتصال") { cycleMode() }
 
+        // RTL professional vertical column: 36dp visual, 48dp touch target (Material guidelines)
         listOf(compassBtn, myLocBtn, threeDBtn, zoomInBtn, zoomOutBtn, modeBtn).forEach { btn ->
-            sideCol.addView(btn, LinearLayout.LayoutParams(dp(40), dp(40)).apply { setMargins(0, dp(4), 0, dp(4)) })
+            val wrapper = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { setMargins(0, dp(3), 0, dp(3)) }
+                // transparent, larger hit area; inner is 36dp visual
+                isClickable = false
+            }
+            val innerParams = FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER)
+            wrapper.addView(btn, innerParams)
+            // expand hit-area: tapping wrapper padding triggers button
+            wrapper.setOnClickListener { btn.performClick() }
+            sideCol.addView(wrapper)
         }
         val sideParams = FrameLayout.LayoutParams(-2, -2).apply {
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setMargins(0, 0, dp(8), 0)
+            setMargins(0, 0, dp(4), 0)
         }
         root.addView(sideCol, sideParams)
 
@@ -430,12 +440,11 @@ class MapActivity : ComponentActivity() {
 
     private fun showLayersSheet() {
         val sheet = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(16)) }
+        // Only expose layers that actually load vector data without API key (OpenFreeMap + Esri free)
         val layers = listOf(
             "الخريطة الليلية" to "dark",
             "خريطة الشوارع" to "streets",
-            "التضاريس" to "terrain",
-            "القمر الصناعي" to "satellite",
-            "المباني 3D" to "3d"
+            "القمر الصناعي" to "satellite"
         )
         layers.forEach { (label, key) ->
             val row = TextView(this).apply {
