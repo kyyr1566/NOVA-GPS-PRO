@@ -309,7 +309,9 @@ class MapActivity : AppCompatActivity() {
         val R = 6371000.0
         val dLat = Math.toRadians(toLat - loc.latitude)
         val dLon = Math.toRadians(toLon - loc.longitude)
-        val a = kotlin.math.sin(dLat / 2).pow(2) + kotlin.math.cos(Math.toRadians(loc.latitude)) * kotlin.math.cos(Math.toRadians(toLat)) * kotlin.math.sin(dLon / 2).pow(2)
+        val sinDLat = kotlin.math.sin(dLat / 2)
+        val sinDLon = kotlin.math.sin(dLon / 2)
+        val a = sinDLat * sinDLat + kotlin.math.cos(Math.toRadians(loc.latitude)) * kotlin.math.cos(Math.toRadians(toLat)) * sinDLon * sinDLon
         val c = 2 * kotlin.math.atan2(kotlin.math.sqrt(a), kotlin.math.sqrt(1 - a))
         return R * c
     }
@@ -532,8 +534,8 @@ class MapActivity : AppCompatActivity() {
         // Save as intent to NavigationEngine (arrow) — keep original arrow system untouched
         try {
             val novaApp = application as NovaApp
-            // Start arrow navigation if not already
-            novaApp.navigation.start(dest)
+            // Start arrow navigation (original system) via setDestination
+            novaApp.navigation.setDestination(dest)
         } catch (_: Exception) {}
         // Also keep map route visible
         lifecycleScope.launch {

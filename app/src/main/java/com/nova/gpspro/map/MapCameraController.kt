@@ -38,9 +38,10 @@ class MapCameraController {
 
     fun saveCamera(pos: CameraPosition) {
         savedPosition = pos
+        val target = pos.target ?: return
         prefs?.edit()?.apply {
-            putFloat("lat", pos.target.latitude.toFloat())
-            putFloat("lon", pos.target.longitude.toFloat())
+            putFloat("lat", target.latitude.toFloat())
+            putFloat("lon", target.longitude.toFloat())
             putFloat("zoom", pos.zoom.toFloat())
             putFloat("tilt", pos.tilt.toFloat())
             putFloat("bearing", pos.bearing.toFloat())
