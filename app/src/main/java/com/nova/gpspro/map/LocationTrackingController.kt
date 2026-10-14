@@ -26,7 +26,8 @@ class LocationTrackingController(private val context: Context) {
         if (last != null && System.currentTimeMillis() - last.time < 5000) return last
         return suspendCancellableCoroutine<Location?> { cont ->
             var resumed = false
-            val listener = LocationEngine.Listener { state ->
+            lateinit var listener: LocationEngine.Listener
+            listener = LocationEngine.Listener { state ->
                 if (state.isUsable && state.location != null && !resumed) {
                     resumed = true
                     app.gps.removeListener(listener)
