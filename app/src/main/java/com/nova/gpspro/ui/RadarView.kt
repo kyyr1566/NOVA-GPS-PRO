@@ -324,18 +324,18 @@ class RadarView(ctx: Context) : View(ctx) {
             if (deg % 90 == 0) {
                 // Draw degree outside, cardinal inside – both
                 degreePaint.textSize = dp(9).toFloat()
-                canvas.drawText(\"${deg}°\", x, y, degreePaint)
+                canvas.drawText("${deg}°", x, y, degreePaint)
             } else {
-                canvas.drawText(\"${deg}°\", x, y, degreePaint)
+                canvas.drawText("${deg}°", x, y, degreePaint)
             }
         }
 
         // Cardinal Arabic labels with small triangle arrows
         val cardinals = arrayOf(
-            Triple(0f, \"شمال\", 0f),
-            Triple(90f, \"شرق\", 90f),
-            Triple(180f, \"جنوب\", 180f),
-            Triple(270f, \"غرب\", 270f)
+            Triple(0f, "شمال", 0f),
+            Triple(90f, "شرق", 90f),
+            Triple(180f, "جنوب", 180f),
+            Triple(270f, "غرب", 270f)
         )
         for ((deg, label, _) in cardinals) {
             val eff = norm360(deg - azimuthDeg)
