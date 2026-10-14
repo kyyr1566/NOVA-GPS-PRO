@@ -30,20 +30,42 @@ class MapDownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorke
         return try {
             outFile.parentFile?.mkdirs()
             tempFile.parentFile?.mkdirs()
+            // Resume support: if temp exists, continue
+            val existing = if (tempFile.exists()) tempFile.length() else 0L
             val url = URL(urlStr)
             val conn = url.openConnection() as HttpURLConnection
             conn.requestMethod = "GET"
             conn.connectTimeout = 15000
             conn.readTimeout = 30000
             conn.setRequestProperty("User-Agent", "NOVA-GPS-PRO/1.0 (OSM)")
+            if (existing > 0) {
+                conn.setRequestProperty("Range", "bytes=$existing-")
+            }
             conn.connect()
-            if (conn.responseCode !in 200..299) {
+            val code = conn.responseCode
+            if (code == 404) {
+                return Result.failure(workDataOf("error" to "404 Not Found"))
+            }
+            if (code == 416) {
+                // Range not satisfiable – restart
+                tempFile.delete()
                 return Result.retry()
             }
-            val total = conn.contentLengthLong
-            var downloaded: Long = 0
+            if (code !in 200..299 && code != 206) {
+                // Server error -> retry, client error -> failure
+                return if (code in 500..599 && runAttemptCount < 3) Result.retry() else Result.failure(workDataOf("error" to "HTTP $code"))
+            }
+            val contentLen = conn.contentLengthLong
+            val total = if (code == 206 && existing > 0 && contentLen > 0) contentLen + existing else if (contentLen > 0) contentLen else -1L
+            var downloaded: Long = existing
+            // If 200 and existing >0, server ignored Range -> restart from 0
+            val append = code == 206 && existing > 0
+            if (!append && existing > 0) {
+                tempFile.delete()
+                downloaded = 0
+            }
             conn.inputStream.use { input ->
-                FileOutputStream(tempFile).use { output ->
+                FileOutputStream(tempFile, append).use { output ->
                     val buf = ByteArray(8192)
                     var n: Int
                     while (input.read(buf).also { n = it } != -1) {
@@ -54,7 +76,7 @@ class MapDownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorke
                             setProgress(workDataOf("progress" to progress, "id" to id))
                         }
                         if (isStopped) {
-                            tempFile.delete()
+                            // Keep temp for resume, don't delete
                             return Result.failure()
                         }
                     }
@@ -73,7 +95,11 @@ class MapDownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWorke
             tempFile.renameTo(outFile)
             Result.success(workDataOf("id" to id, "path" to outFile.absolutePath))
         } catch (e: Exception) {
-            tempFile.delete()
+            // Keep temp for resume on transient errors; delete only on final failure after retries
+            if (runAttemptCount >= 3) {
+                // keep temp for manual resume? but mark failure
+                // tempFile.delete() // keep for resume even on failure
+            }
             if (runAttemptCount < 3) Result.retry() else Result.failure(workDataOf("error" to (e.message ?: "download_failed")))
         }
     }

@@ -23,18 +23,45 @@ class RoutingRepository(private val context: Context) {
     )
 
     suspend fun route(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): RouteResult = withContext(Dispatchers.IO) {
-        // Try OSRM public demo (free, open)
-        val road = tryOsrm(fromLat, fromLon, toLat, toLon)
-        if (road != null) return@withContext road
-        // Try alternative: Valhalla or OSRM fallback
-        val road2 = tryOsrmFallback(fromLat, fromLon, toLat, toLon)
-        if (road2 != null) return@withContext road2
-        // Fallback: straight line (as crow flies)
+        // Check offline routing data first if offline and available – honest attempt
+        val hasOfflineRouting = try { OfflineRoutingManager.hasRoutingData(context) } catch (_: Exception) { false }
+        val isOnline = isOnline()
+        // Try online OSRM if connected
+        if (isOnline) {
+            val road = tryOsrm(fromLat, fromLon, toLat, toLon)
+            if (road != null) return@withContext road
+            val road2 = tryOsrmFallback(fromLat, fromLon, toLat, toLon)
+            if (road2 != null) return@withContext road2
+        }
+        // Try offline BRouter if data present (engine stub – will be implemented with brouter-core)
+        if (hasOfflineRouting) {
+            val offline = tryOfflineBRouter(fromLat, fromLon, toLat, toLon)
+            if (offline != null) return@withContext offline
+            // If offline data exists but engine not yet integrated, do NOT silently return straight line as road
+            // Fall through to straight line with isRoad=false so caller shows honest message
+        }
+        // Fallback: straight line (as crow flies) – MUST be isRoad=false, caller must not treat as road
         val dist = haversine(fromLat, fromLon, toLat, toLon)
         val coords = listOf(fromLat to fromLon, toLat to toLon)
-        // Assume 50 km/h avg for time estimate
         val duration = if (dist > 0) dist / (50 * 1000 / 3600.0) else 0.0
         RouteResult(coords, dist, duration, isRoad = false)
+    }
+
+    private fun isOnline(): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) { true }
+    }
+
+    private fun tryOfflineBRouter(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): RouteResult? {
+        // Stub for BRouter offline engine – requires brouter-core integration + local rd5 segments
+        // Current status: segments download works, engine integration pending airplane-mode test
+        // Returning null ensures caller treats straight line as NOT road and shows honest offline message
+        // TODO: integrate brouter-codec: BRouter().doRouting(start, end, segmentsDir) → parse GeoJSON
+        return null
     }
 
     private fun tryOsrm(fromLat: Double, fromLon: Double, toLat: Double, toLon: Double): RouteResult? {

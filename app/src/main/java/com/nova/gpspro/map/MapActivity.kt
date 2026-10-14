@@ -1,5 +1,6 @@
 package com.nova.gpspro.map
 
+import android.location.Location
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -12,6 +13,7 @@ import com.nova.gpspro.NovaApp
 import com.nova.gpspro.R
 import com.nova.gpspro.data.Destination
 import com.nova.gpspro.ui.C
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
@@ -20,6 +22,10 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.android.style.sources.GeoJsonSource
+import kotlin.math.*
 
 /**
  * Professional Map Screen — MapLibre Native, offline PMTiles, vector, 3D, routing.
@@ -52,6 +58,7 @@ class MapActivity : ComponentActivity() {
     private lateinit var cardTitleView: TextView
     private lateinit var cardSubtitleView: TextView
     private lateinit var labelView: TextView
+    private lateinit var sideCol: LinearLayout
 
     private var targetDestination: Destination? = null
     private var pendingPreviewLat: Double? = null
@@ -59,6 +66,13 @@ class MapActivity : ComponentActivity() {
     private var pendingPreviewName: String? = null
     private var isNavigating: Boolean = false
     private var currentLayerKey: String = "dark"
+    // Navigation follow state
+    private var navigationListener: com.nova.gpspro.location.LocationEngine.Listener? = null
+    private var lastRoute: RoutingRepository.RouteResult? = null
+    private var routeRemainingMeters: Double = 0.0
+    private var routeRemainingSeconds: Double = 0.0
+    private var lastBearing: Float = 0f
+    private var offRouteCount: Int = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -344,7 +358,7 @@ class MapActivity : ComponentActivity() {
         root.addView(topPill, topParams)
 
         // ── Side controls – all on right, below top pill, slightly larger (42dp visual / 52dp touch) ──
-        val sideCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+        sideCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
         val layersBtn = smallIconButton("⬢", "الطبقات") { cycleLayers() }
         val compassBtn = smallIconButton("◉", "الشمال") { map?.let { cameraController.bearingNorth(it) } }
         val myLocBtn = smallIconButton("◎", "موقعي") { centerToMyLocation() }
@@ -839,19 +853,112 @@ class MapActivity : ComponentActivity() {
     }
 
     private fun showRoadNetworkManager() {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), dp(12), dp(12), dp(12)) }
-        box.addView(TextView(this).apply { text = "شبكة الطرق للملاحة غير المتصلة\nيستخدم BRouter / Valhalla مع بيانات OSM للعراق.\nيمكن تنزيل ملف routing من خوادم مفتوحة المصدر."; setTextColor(C.TEXT2); textSize = 13f })
+        val scroll = android.widget.ScrollView(this)
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)) }
+        scroll.addView(box)
         box.addView(TextView(this).apply {
-            text = "تنزيل شبكة طرق العراق"
-            setTextColor(android.graphics.Color.WHITE)
-            textSize = 14f
-            gravity = Gravity.CENTER
+            text = "شبكة الطرق للملاحة دون إنترنت (BRouter)\nالمصدر: OpenStreetMap عبر BRouter segments (ODbL). كل قطعة 5×5 درجات. بعد التنزيل تُستخدم للتوجيه المحلي في وضع الطيران (يحتاج محرك BRouter)."
+            setTextColor(C.TEXT2); textSize = 12f; setPadding(0, 0, 0, dp(10))
+        })
+        val segments = OfflineRoutingManager.availableSegments()
+        segments.forEach { seg ->
+            val has = OfflineRoutingManager.hasSegment(this, seg.id)
+            val file = OfflineRoutingManager.segmentFile(this, seg.id)
+            val sizeMb = String.format("%.0f MB", seg.sizeBytes / 1024.0 / 1024.0)
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(10), dp(8), dp(10)) }
+            val nameCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; layoutParams = LinearLayout.LayoutParams(0, -2, 1f) }
+            nameCol.addView(TextView(this).apply { text = "${seg.id} – ${seg.nameAr}"; setTextColor(C.TEXT); textSize = 13f; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL) })
+            nameCol.addView(TextView(this).apply {
+                val info = if (has) "✓ مثبت • ${String.format("%.1f MB", file.length()/1024.0/1024.0)}" else "الحجم: $sizeMb"
+                text = info; setTextColor(C.TEXT2); textSize = 11f
+            })
+            row.addView(nameCol)
+            val action = TextView(this).apply {
+                text = if (has) "✓ مثبت" else "تنزيل"
+                setTextColor(if (has) 0xFF1B8B2A.toInt() else C.PRIMARY_A)
+                textSize = 13f; gravity = Gravity.CENTER; minWidth = dp(78)
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+                    cornerRadius = dp(8).toFloat()
+                    setColor(C.CARD_SOFT); setStroke(dp(1), C.BORDER)
+                }
+                setPadding(dp(10), dp(7), dp(10), dp(7))
+            }
+            action.setOnClickListener {
+                if (OfflineRoutingManager.hasSegment(this@MapActivity, seg.id)) {
+                    OfflineRoutingManager.deleteSegment(this@MapActivity, seg.id)
+                    action.text = "تنزيل"; action.setTextColor(C.PRIMARY_A)
+                    try { (nameCol.getChildAt(1) as TextView).text = "الحجم: $sizeMb" } catch (_: Exception) {}
+                    android.widget.Toast.makeText(this@MapActivity, "تم الحذف: ${seg.id}", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    try {
+                        action.text = "0%"; action.setTextColor(C.TEXT2)
+                        OfflineRoutingManager.enqueueDownload(this@MapActivity, seg, useMirror = false)
+                        android.widget.Toast.makeText(this@MapActivity, "بدء تنزيل ${seg.id} ($sizeMb) من brouter.de", android.widget.Toast.LENGTH_SHORT).show()
+                        val wm = androidx.work.WorkManager.getInstance(this@MapActivity)
+                        wm.getWorkInfosByTagLiveData(seg.id).observe(this@MapActivity) { infos ->
+                            val info = infos?.firstOrNull() ?: return@observe
+                            val prog = info.progress.getInt("progress", -1)
+                            val state = info.state
+                            if (prog in 0..100 && state == androidx.work.WorkInfo.State.RUNNING) {
+                                action.text = "$prog%"
+                            } else if (state == androidx.work.WorkInfo.State.SUCCEEDED) {
+                                val f = OfflineRoutingManager.segmentFile(this@MapActivity, seg.id)
+                                val ok = f.exists() && f.length() > 1024 && OfflineRoutingManager.verifySha256(f, seg.sha256)
+                                if (ok) {
+                                    action.text = "✓ مثبت"; action.setTextColor(0xFF1B8B2A.toInt())
+                                    try { (nameCol.getChildAt(1) as TextView).text = "✓ مثبت • ${String.format("%.1f MB", f.length()/1024.0/1024.0)}" } catch (_: Exception) {}
+                                    android.widget.Toast.makeText(this@MapActivity, "تم تثبيت ${seg.id} – جاهز للتوجيه دون إنترنت (يحتاج محرك BRouter)", android.widget.Toast.LENGTH_LONG).show()
+                                } else {
+                                    action.text = "فشل التحقق"; action.setTextColor(0xFFD9544D.toInt())
+                                    android.widget.Toast.makeText(this@MapActivity, "فشل التحقق من ${seg.id}", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            } else if (state == androidx.work.WorkInfo.State.FAILED) {
+                                val err = info.outputData.getString("error") ?: "فشل"
+                                // Try mirror if primary 404
+                                if (err.contains("404") || err.contains("Not Found")) {
+                                    // Try mirror automatically once
+                                    try {
+                                        OfflineRoutingManager.enqueueDownload(this@MapActivity, seg, useMirror = true)
+                                        android.widget.Toast.makeText(this@MapActivity, "الأساسي غير متوفر، جارٍ المحاولة من المرآة GitHub...", android.widget.Toast.LENGTH_SHORT).show()
+                                    } catch (_: Exception) {}
+                                    action.text = "غير متوفر"; action.setTextColor(0xFFD9544D.toInt())
+                                    android.widget.Toast.makeText(this@MapActivity, "القطعة ${seg.id} غير متوفرة حالياً على brouter.de – تحتاج رفع مرآة إلى Releases/routing-v1", android.widget.Toast.LENGTH_LONG).show()
+                                } else {
+                                    action.text = "خطأ"; action.setTextColor(0xFFD9544D.toInt())
+                                    android.widget.Toast.makeText(this@MapActivity, "فشل تنزيل ${seg.id}: $err", android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            } else if (state == androidx.work.WorkInfo.State.CANCELLED) {
+                                action.text = "أُلغي"; action.setTextColor(C.TEXT2)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        action.text = "خطأ"
+                        android.widget.Toast.makeText(this@MapActivity, "تعذر البدء: ${e.message}", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            row.addView(action, LinearLayout.LayoutParams(-2, -2).apply { setMargins(dp(8), 0, 0, 0) })
+            box.addView(row)
+            box.addView(View(this).apply { setBackgroundColor(C.BORDER); layoutParams = LinearLayout.LayoutParams(-1, dp(1)) })
+        }
+        box.addView(TextView(this).apply {
+            text = "ملاحظة: تنزيل القطع يعمل فعلياً عبر WorkManager. الملاحة Offline تتطلب محرك BRouter (brouter-core) – التنزيل مكتمل أما التوجيه المحلي قيد الاختبار في وضع الطيران."
+            setTextColor(C.TEXT2); textSize = 11f; setPadding(dp(4), dp(10), dp(4), dp(4))
+        })
+        // Download all button
+        box.addView(TextView(this).apply {
+            text = "تنزيل كل قطع العراق (6 قطع)"
+            setTextColor(android.graphics.Color.WHITE); textSize = 14f; gravity = Gravity.CENTER
             background = android.graphics.drawable.GradientDrawable().apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(10).toFloat(); setColor(C.PRIMARY_A) }
             setPadding(dp(12), dp(10), dp(12), dp(10))
-            setOnClickListener { android.widget.Toast.makeText(this@MapActivity, "قريباً: تنزيل شبكة الطرق (BRouter)", android.widget.Toast.LENGTH_SHORT).show() }
+            setOnClickListener {
+                segments.forEach { seg -> if (!OfflineRoutingManager.hasSegment(this@MapActivity, seg.id)) OfflineRoutingManager.enqueueDownload(this@MapActivity, seg) }
+                android.widget.Toast.makeText(this@MapActivity, "بدء تنزيل كل القطع...", android.widget.Toast.LENGTH_SHORT).show()
+            }
             layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(12), 0, 0) }
         })
-        com.nova.gpspro.ui.NovaDialog(this).title("شبكة الطرق").content(box).button("إغلاق", C.TEXT2) { it.dismiss() }.show()
+        com.nova.gpspro.ui.NovaDialog(this).title("شبكة الطرق (BRouter)").content(scroll).button("إغلاق", C.TEXT2) { it.dismiss() }.show()
     }
 
     private fun showSatelliteManager() {
@@ -877,48 +984,31 @@ class MapActivity : ComponentActivity() {
             val name = pendingPreviewName ?: "الوجهة"
             Destination(id = "preview", name = name, latitude = lat, longitude = lon, photoPath = null, notes = null, createdAt = System.currentTimeMillis())
         }
-        // Show loading state? Keep preview but prepare active
         lifecycleScope.launch {
             val loc = locationController.lastLocation() ?: locationController.awaitFreshLocation()
             if (loc == null) {
-                android.widget.Toast.makeText(this@MapActivity, "تعذر تحديد موقعك الحالي", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(this@MapActivity, "تعذر تحديد موقعك الحالي – تأكد من تفعيل GPS", android.widget.Toast.LENGTH_SHORT).show()
                 return@launch
             }
             try {
-                // Save to arrow system – keep original untouched
                 try { (application as NovaApp).navigation.setDestination(dest) } catch (_: Exception) {}
-                // Request real road route
                 navigationSession?.previewDestination(dest)
                 val route = routingRepo.route(loc.latitude, loc.longitude, dest.latitude, dest.longitude)
                 if (!route.isRoad || route.coordinates.size < 2) {
-                    // Do not show fake route or old numbers
                     try { navigationSession?.clearRoute() } catch (_: Exception) {}
-                    android.widget.Toast.makeText(this@MapActivity, "تعذر حساب مسار عبر الشوارع — تحقق من الاتصال", android.widget.Toast.LENGTH_LONG).show()
-                    // Keep preview, do not switch to active
+                    // Offline handling: check if routing data missing
+                    val hasOfflineRouting = OfflineRoutingManager.hasRoutingData(this@MapActivity)
+                    val msg = if (!hasOfflineRouting && !isOnlineForRouting()) {
+                        "لا يوجد اتصال ولا بيانات توجيه محلية – حمّل شبكة الطرق للملاحة دون إنترنت"
+                    } else {
+                        "تعذر حساب مسار عبر الشوارع — تحقق من الاتصال (الخط المستقيم ليس مساراً)"
+                    }
+                    android.widget.Toast.makeText(this@MapActivity, msg, android.widget.Toast.LENGTH_LONG).show()
                     return@launch
                 }
-                // Draw turquoise route
                 navigationSession?.drawRoute(route)
-                // Switch UI to active navigation
-                isNavigating = true
-                cardSubtitleView.text = "${formatDistance(route.distanceMeters)} • ${formatDuration(route.durationSeconds)}"
-                cardSubtitleView.visibility = View.VISIBLE
-                distanceView.text = formatDistance(route.distanceMeters)
-                etaView.text = formatDuration(route.durationSeconds)
-                val speed = try { loc.speed.toDouble() } catch (_: Exception) { 0.0 }
-                speedView.text = formatSpeed(speed)
-                statsRow.visibility = View.VISIBLE
-                dividerView.visibility = View.VISIBLE
-                primaryActionBtn.text = "⏹  إنهاء"
-                primaryActionBtn.setTextColor(android.graphics.Color.WHITE)
-                primaryActionBtn.background = android.graphics.drawable.GradientDrawable().apply {
-                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-                    cornerRadius = dp(14).toFloat()
-                    setColor(0xFFD93A3A.toInt())
-                }
-                primaryActionBtn.setOnClickListener { endNavigation() }
-                // Also keep bottomBar visible
-                bottomBar.visibility = View.VISIBLE
+                lastRoute = route
+                enterNavigationMode(route, loc, dest)
                 android.widget.Toast.makeText(this@MapActivity, "تم بدء التوجه: ${dest.name}", android.widget.Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
                 try { navigationSession?.clearRoute() } catch (_: Exception) {}
@@ -927,13 +1017,330 @@ class MapActivity : ComponentActivity() {
         }
     }
 
+    private fun enterNavigationMode(route: RoutingRepository.RouteResult, loc: Location, dest: Destination) {
+        isNavigating = true
+        routeRemainingMeters = route.distanceMeters
+        routeRemainingSeconds = route.durationSeconds
+        offRouteCount = 0
+        // Hide floating buttons per spec 2
+        try { sideCol.visibility = View.GONE } catch (_: Exception) {}
+        // Update card to active
+        cardSubtitleView.text = "${formatDistance(route.distanceMeters)} • ${formatDuration(route.durationSeconds)}"
+        cardSubtitleView.visibility = View.VISIBLE
+        distanceView.text = formatDistance(route.distanceMeters)
+        etaView.text = formatDuration(route.durationSeconds)
+        val speedMps = try { loc.speed.toDouble() } catch (_: Exception) { 0.0 }
+        speedView.text = formatSpeed(speedMps)
+        statsRow.visibility = View.VISIBLE
+        dividerView.visibility = View.VISIBLE
+        primaryActionBtn.text = "⏹  إنهاء"
+        primaryActionBtn.setTextColor(android.graphics.Color.WHITE)
+        primaryActionBtn.background = android.graphics.drawable.GradientDrawable().apply {
+            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
+            cornerRadius = dp(14).toFloat()
+            setColor(0xFFD93A3A.toInt())
+        }
+        primaryActionBtn.setOnClickListener { endNavigation() }
+        bottomBar.visibility = View.VISIBLE
+        // Real GPS move: jump to actual location, zoom for driving 17.5, tilt 55, bearing from GPS
+        val bearing = bearingForLocation(loc)
+        lastBearing = bearing
+        try {
+            val cam = CameraPosition.Builder()
+                .target(LatLng(loc.latitude, loc.longitude))
+                .zoom(17.5)
+                .tilt(55.0)
+                .bearing(bearing.toDouble())
+                .build()
+            map?.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 1000)
+        } catch (_: Exception) {}
+        // Ensure blue arrow
+        try { map?.getStyle { style -> ensureVehicleArrow(style); updateVehiclePosition(loc, bearing) } } catch (_: Exception) {}
+        // Start follow
+        startNavigationFollow()
+    }
+
     private fun endNavigation() {
         isNavigating = false
-        // Stop session and clear route/destination/cards
+        stopNavigationFollow()
+        // Restore floating buttons
+        try { sideCol.visibility = View.VISIBLE } catch (_: Exception) {}
+        // Remove vehicle arrow
+        try {
+            map?.getStyle { style ->
+                try { style.removeLayer("nova-vehicle-arrow-layer") } catch (_: Exception) {}
+                try { style.removeSource("nova-vehicle-source") } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+        // Reset camera tilt
+        try {
+            val cur = map?.cameraPosition
+            if (cur != null) {
+                val reset = CameraPosition.Builder(cur).tilt(0.0).bearing(0.0).build()
+                map?.animateCamera(CameraUpdateFactory.newCameraPosition(reset), 600)
+            }
+        } catch (_: Exception) {}
         try { navigationSession?.clearRoute() } catch (_: Exception) {}
-        // Also clear arrow destination? Keep arrow untouched but map route cleared – spec says remove destination and cards
+        lastRoute = null
+        offRouteCount = 0
         clearPreview(animate = false)
         android.widget.Toast.makeText(this, "تم إنهاء الملاحة", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    // ——— Navigation follow / real GPS handling ———
+
+    private fun startNavigationFollow() {
+        stopNavigationFollow()
+        try {
+            val app = application as NovaApp
+            val listener = com.nova.gpspro.location.LocationEngine.Listener { state ->
+                val loc = state.location ?: return@Listener
+                if (!state.isUsable) return@Listener
+                // Use real GPS only, no simulation
+                runOnUiThread { onLocationUpdateDuringNavigation(loc, state.bearing, state.bearingLive) }
+            }
+            navigationListener = listener
+            app.gps.addListener(listener)
+        } catch (_: Exception) {}
+    }
+
+    private fun stopNavigationFollow() {
+        try {
+            val l = navigationListener ?: return
+            (application as? NovaApp)?.gps?.removeListener(l)
+            navigationListener = null
+        } catch (_: Exception) {}
+    }
+
+    private fun onLocationUpdateDuringNavigation(loc: Location, bearing: Float, bearingLive: Boolean) {
+        if (!isNavigating) return
+        val b = if (bearingLive) bearing else lastBearing
+        if (bearingLive) lastBearing = b
+        // Update blue arrow position + rotation
+        try { updateVehiclePosition(loc, b) } catch (_: Exception) {}
+        // Camera follow: smooth track, rotate map per true bearing, tilt 55, zoom 17.5
+        try {
+            val cam = CameraPosition.Builder()
+                .target(LatLng(loc.latitude, loc.longitude))
+                .zoom(17.5)
+                .tilt(55.0)
+                .bearing(b.toDouble())
+                .build()
+            map?.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 800)
+        } catch (_: Exception) {}
+        // Real trip info: speed from GPS, remaining from route progress, no internet needed
+        updateTripInfoFromLocation(loc)
+        checkDeviationAndReroute(loc)
+    }
+
+    private fun bearingForLocation(loc: Location): Float {
+        return try {
+            val app = application as NovaApp
+            // Prefer BearingEngine via GpsState if available
+            val state = app.gps.state
+            if (state.isUsable && state.bearingLive) state.bearing else if (loc.hasBearing()) loc.bearing else lastBearing
+        } catch (_: Exception) {
+            try { if (loc.hasBearing()) loc.bearing else lastBearing } catch (_: Exception) { 0f }
+        }
+    }
+
+    private fun isOnlineForRouting(): Boolean {
+        return try {
+            val cm = getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } catch (_: Exception) { true }
+    }
+
+    private fun ensureVehicleArrow(style: Style) {
+        try {
+            if (style.getImage("nova-vehicle-arrow") != null) return
+        } catch (_: Exception) {}
+        try {
+            val bmp = createBlueArrowBitmap()
+            style.addImage("nova-vehicle-arrow", bmp)
+            val src = GeoJsonSource("nova-vehicle-source", "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[0,0]},\"properties\":{}}")
+            style.addSource(src)
+            val layer = SymbolLayer("nova-vehicle-arrow-layer", "nova-vehicle-source")
+            layer.setProperties(
+                PropertyFactory.iconImage("nova-vehicle-arrow"),
+                PropertyFactory.iconSize(1.0f),
+                PropertyFactory.iconAllowOverlap(true),
+                PropertyFactory.iconIgnorePlacement(true),
+                PropertyFactory.iconAnchor("center"),
+                PropertyFactory.iconRotate(0f),
+                PropertyFactory.iconRotationAlignment("map")
+            )
+            style.addLayer(layer)
+        } catch (_: Exception) {}
+    }
+
+    private fun createBlueArrowBitmap(): android.graphics.Bitmap {
+        val size = 64
+        val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(bmp)
+        val blue = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF2E5BDA.toInt()
+            style = android.graphics.Paint.Style.FILL
+            setShadowLayer(4f, 0f, 2f, 0x44000000)
+        }
+        val white = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFFFFFF.toInt()
+            style = android.graphics.Paint.Style.STROKE
+            strokeWidth = 2.5f
+        }
+        val cx = size / 2f
+        val cy = size / 2f
+        val path = android.graphics.Path().apply {
+            moveTo(cx, 8f) // tip north
+            lineTo(cx + 14f, 42f)
+            lineTo(cx, 34f)
+            lineTo(cx - 14f, 42f)
+            close()
+        }
+        c.drawPath(path, blue)
+        c.drawPath(path, white)
+        // inner highlight circle for visibility
+        val inner = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x66FFFFFF
+            style = android.graphics.Paint.Style.FILL
+        }
+        c.drawCircle(cx, 24f, 3f, inner)
+        return bmp
+    }
+
+    private fun updateVehiclePosition(loc: Location, bearing: Float) {
+        val m = map ?: return
+        val style = m.style ?: return
+        try {
+            ensureVehicleArrow(style)
+            val src = style.getSourceAs<GeoJsonSource>("nova-vehicle-source") ?: return
+            val json = "{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[${loc.longitude},${loc.latitude}]},\"properties\":{}}"
+            src.setGeoJson(json)
+            val layer = style.getLayerAs<SymbolLayer>("nova-vehicle-arrow-layer") ?: return
+            layer.setProperties(PropertyFactory.iconRotate(bearing))
+        } catch (_: Exception) {}
+    }
+
+    private fun updateTripInfoFromLocation(loc: Location) {
+        val route = lastRoute ?: return
+        // Find progress along route
+        val remaining = computeRemainingDistance(loc, route)
+        routeRemainingMeters = remaining
+        // Real speed from GPS (m/s) – no internet needed
+        val speedMps = try { loc.speed.toDouble() } catch (_: Exception) { 0.0 }
+        val kmh = speedMps * 3.6
+        speedView.text = formatSpeed(speedMps)
+        distanceView.text = formatDistance(remaining)
+        // ETA from remaining / speed (if moving) else from route average
+        val avgSpeed = if (route.durationSeconds > 0) route.distanceMeters / route.durationSeconds else 5.0
+        val useSpeed = if (speedMps > 1.0) speedMps else avgSpeed
+        val etaSec = if (useSpeed > 0.5) remaining / useSpeed else routeRemainingSeconds
+        routeRemainingSeconds = etaSec
+        etaView.text = formatDuration(etaSec)
+        try { cardSubtitleView.text = "${formatDistance(remaining)} • ${formatDuration(etaSec)}" } catch (_: Exception) {}
+    }
+
+    private fun computeRemainingDistance(loc: Location, route: RoutingRepository.RouteResult): Double {
+        val coords = route.coordinates // list of lat,lon
+        if (coords.size < 2) return route.distanceMeters
+        // Find nearest segment
+        var bestIdx = 0
+        var bestDist = Double.MAX_VALUE
+        var bestT = 0.0
+        var cumulative = 0.0
+        val segLens = mutableListOf<Double>()
+        for (i in 0 until coords.size - 1) {
+            val (lat1, lon1) = coords[i]
+            val (lat2, lon2) = coords[i + 1]
+            val len = haversineMeters(lat1, lon1, lat2, lon2)
+            segLens.add(len)
+        }
+        // find nearest point
+        for (i in 0 until coords.size - 1) {
+            val (lat1, lon1) = coords[i]
+            val (lat2, lon2) = coords[i + 1]
+            val t = projectT(loc.latitude, loc.longitude, lat1, lon1, lat2, lon2)
+            val projLat = lat1 + t * (lat2 - lat1)
+            val projLon = lon1 + t * (lon2 - lon1)
+            val d = haversineMeters(loc.latitude, loc.longitude, projLat, projLon)
+            if (d < bestDist) {
+                bestDist = d
+                bestIdx = i
+                bestT = t
+            }
+        }
+        // Sum remaining from bestIdx
+        var remaining = 0.0
+        // remaining part of current segment
+        val (lat1, lon1) = coords[bestIdx]
+        val (lat2, lon2) = coords[bestIdx + 1]
+        val segLen = segLens[bestIdx]
+        remaining += (1 - bestT) * segLen
+        for (i in bestIdx + 1 until coords.size - 1) remaining += segLens[i]
+        return remaining.coerceAtLeast(0.0)
+    }
+
+    private fun projectT(lat: Double, lon: Double, lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        // Simple linear project in degrees (approx for small segments)
+        val dx = lon2 - lon1
+        val dy = lat2 - lat1
+        if (dx == 0.0 && dy == 0.0) return 0.0
+        val t = ((lon - lon1) * dx + (lat - lat1) * dy) / (dx * dx + dy * dy)
+        return t.coerceIn(0.0, 1.0)
+    }
+
+    private fun haversineMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val R = 6371000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = sin(dLat / 2).pow(2) + cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2).pow(2)
+        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        return R * c
+    }
+
+    private fun checkDeviationAndReroute(loc: Location) {
+        val route = lastRoute ?: return
+        val coords = route.coordinates
+        if (coords.isEmpty()) return
+        var minDist = Double.MAX_VALUE
+        for (i in 0 until coords.size - 1) {
+            val (lat1, lon1) = coords[i]
+            val (lat2, lon2) = coords[i + 1]
+            val t = projectT(loc.latitude, loc.longitude, lat1, lon1, lat2, lon2)
+            val projLat = lat1 + t * (lat2 - lat1)
+            val projLon = lon1 + t * (lon2 - lon1)
+            val d = haversineMeters(loc.latitude, loc.longitude, projLat, projLon)
+            if (d < minDist) minDist = d
+        }
+        if (minDist > 50.0) {
+            offRouteCount++
+            if (offRouteCount >= 3) {
+                offRouteCount = 0
+                rerouteFrom(loc)
+            }
+        } else {
+            offRouteCount = 0
+        }
+    }
+
+    private fun rerouteFrom(loc: Location) {
+        val dest = targetDestination ?: return
+        lifecycleScope.launch {
+            try {
+                val newRoute = routingRepo.route(loc.latitude, loc.longitude, dest.latitude, dest.longitude)
+                if (!newRoute.isRoad || newRoute.coordinates.size < 2) {
+                    android.widget.Toast.makeText(this@MapActivity, "انحرفت عن المسار – تعذر إعادة الحساب (تحقق من الشبكة أو حمّل شبكة الطرق)", android.widget.Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                lastRoute = newRoute
+                navigationSession?.drawRoute(newRoute)
+                android.widget.Toast.makeText(this@MapActivity, "تم إعادة حساب المسار", android.widget.Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(this@MapActivity, "فشل إعادة التوجيه", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     private fun formatDistance(m: Double): String {
@@ -992,6 +1399,6 @@ class MapActivity : ComponentActivity() {
     override fun onPause() { if (::mapView.isInitialized) try { mapView.onPause() } catch (_: Exception) {}; super.onPause() }
     override fun onStop() { if (::mapView.isInitialized) try { mapView.onStop() } catch (_: Exception) {}; super.onStop() }
     override fun onLowMemory() { super.onLowMemory(); if (::mapView.isInitialized) try { mapView.onLowMemory() } catch (_: Exception) {} }
-    override fun onDestroy() { if (::mapView.isInitialized) try { mapView.onDestroy() } catch (_: Exception) {}; try { navigationSession?.detach() } catch (_: Exception) {}; super.onDestroy() }
+    override fun onDestroy() { try { stopNavigationFollow() } catch (_: Exception) {}; if (::mapView.isInitialized) try { mapView.onDestroy() } catch (_: Exception) {}; try { navigationSession?.detach() } catch (_: Exception) {}; super.onDestroy() }
     override fun onSaveInstanceState(outState: Bundle) { super.onSaveInstanceState(outState); if (::mapView.isInitialized) try { mapView.onSaveInstanceState(outState) } catch (_: Exception) {} }
 }
