@@ -7,9 +7,6 @@ on:
       - main
       - "arena/**"
 
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -39,49 +36,6 @@ jobs:
           chmod +x gradlew
           set -o pipefail
           ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
-
-      - name: Upload build log on failure
-        if: failure()
-        run: |
-          echo "=== build.log tail ==="
-          tail -n 1000 build.log || true
-          echo "=== END ==="
-
-      - name: Post build log as commit comment
-        if: failure()
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            let log = '';
-            try { log = fs.readFileSync('build.log', 'utf8'); } catch(e) { log = 'no build.log found'; }
-            // Find compilation error section
-            let snippet = '';
-            const markers = ['e: ', 'error:', 'FAILED', 'Execution failed', 'Unresolved reference', 'Cannot resolve'];
-            let idx = -1;
-            for (const m of markers) {
-              const i = log.indexOf(m);
-              if (i !== -1) { idx = i; break; }
-            }
-            if (idx !== -1) {
-              snippet = log.slice(Math.max(0, idx - 500), idx + 5500);
-            } else {
-              snippet = log.slice(-6000);
-            }
-            // Also try to get task failure
-            const taskIdx = log.indexOf('> Task :app');
-            if (taskIdx !== -1) {
-              const taskSnippet = log.slice(taskIdx, taskIdx + 3000);
-              snippet = taskSnippet + "\n---\n" + snippet;
-            }
-            snippet = snippet.slice(0, 6000);
-            const body = "Build failed at `${{ github.sha }}` (run ${{ github.run_id }}):\n```\n" + snippet + "\n```";
-            await github.rest.repos.createCommitComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              commit_sha: context.sha,
-              body: body
-            });
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
