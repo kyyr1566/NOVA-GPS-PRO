@@ -226,6 +226,13 @@ class MapActivity : ComponentActivity() {
 
         val styleUrl = try { styleManager.currentStyleUrl() } catch (_: Exception) { "asset://mapstyles/dark.json" }
         val effectiveStyle = if (styleUrl.startsWith("pmtiles://")) "asset://mapstyles/dark.json" else styleUrl
+        // Prevent excessive digital zoom for raster layers (satellite blur, "Map data not yet available")
+        val initialMaxZ = when {
+            effectiveStyle.contains("satellite") || effectiveStyle.contains("hybrid") -> 19.0
+            effectiveStyle.contains("topo") -> 17.0
+            else -> 20.0
+        }
+        try { map.setMaxZoomPreference(initialMaxZ) } catch (_: Exception) {}
         try {
             val builder = Style.Builder().fromUri(effectiveStyle)
             map.setStyle(builder, object : Style.OnStyleLoaded {
@@ -233,6 +240,13 @@ class MapActivity : ComponentActivity() {
                     try {
                         styleManager.applyStyle(style, map)
                         savedRepo.attach(map)
+                        // Ensure correct maxZoom after style load (prevents blur overzoom)
+                        try { map.setMaxZoomPreference(initialMaxZ) } catch (_: Exception) {}
+                        // Ensure vehicle arrow stays on top if navigating
+                        if (isNavigating) {
+                            try { map.getStyle { s -> ensureVehicleArrow(s) } } catch (_: Exception) {}
+                            lastRoute?.let { try { navigationSession?.drawRoute(it) } catch (_: Exception) {} }
+                        }
                     } catch (e: Exception) { android.util.Log.e("NOVA_MAP", "style apply failed", e) }
                 }
             })
@@ -321,31 +335,38 @@ class MapActivity : ComponentActivity() {
         root.addView(topPill, topParams)
 
         // ── Side controls – all on right, below top pill, slightly larger (42dp visual / 52dp touch) ──
-        sideCol = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
-        // 6 tools on right – vertical, medium, NOVA blue, not overlapping top pill
-        val layersBtn = smallIconButton("⬢", "الطبقات") { cycleLayers() }
+        sideCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            // Force LTR to keep buttons on physical right in RTL (Arabic) – otherwise END flips to left
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
+        }
+        // 6 tools on right – vertical, circular NOVA blue, white icons, bigger (48dp visual / 56dp touch), uniform spacing
+        val layersBtn = smallIconButton("⬢", "الطبقات") { showLayersSheet() }
         val compassBtn = smallIconButton("◉", "البوصلة") { map?.let { cameraController.bearingNorth(it) } }
         val myLocBtn = smallIconButton("◎", "موقعي") { centerToMyLocation() }
         val threeDBtn = smallIconButton("3D", "2D/3D") { toggle3D() }
         val zoomInBtn = smallIconButton("+", "تكبير") { map?.animateCamera(CameraUpdateFactory.zoomIn()) }
         val zoomOutBtn = smallIconButton("−", "تصغير") { map?.animateCamera(CameraUpdateFactory.zoomOut()) }
-        // Order: zoomIn, zoomOut, myLoc, compass, layers, 3D – organized vertical on right
+        // Order: zoomIn, zoomOut, myLoc, compass, layers, 3D – organized vertical on right, uniform 6dp gaps
         listOf(zoomInBtn, zoomOutBtn, myLocBtn, compassBtn, layersBtn, threeDBtn).forEach { btn ->
             val wrapper = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply { setMargins(0, dp(2), 0, dp(2)) }
+                layoutParams = LinearLayout.LayoutParams(dp(56), dp(56)).apply { setMargins(0, dp(3), 0, dp(3)) }
                 isClickable = false
             }
-            wrapper.addView(btn, FrameLayout.LayoutParams(dp(42), dp(42), Gravity.CENTER))
+            wrapper.addView(btn, FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER))
             wrapper.setOnClickListener { btn.performClick() }
             sideCol.addView(wrapper)
         }
         val sideParams = FrameLayout.LayoutParams(-2, -2).apply {
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            // Right side, vertical, not overlapping top pill (topMargin 90dp) and not overlapping bottom bar
+            // Physical right, not RTL-dependent END – use RIGHT with LTR container
+            gravity = Gravity.RIGHT or Gravity.CENTER_VERTICAL
             topMargin = dp(90)
-            marginEnd = dp(10)
+            rightMargin = dp(12)
             bottomMargin = dp(90)
         }
+        // Ensure sideCol itself is LTR so RIGHT stays right
+        sideCol.layoutDirection = View.LAYOUT_DIRECTION_LTR
         root.addView(sideCol, sideParams)
 
         // ── Bottom floating card – small, not full width, rounded 20dp ──
@@ -594,14 +615,22 @@ class MapActivity : ComponentActivity() {
             this.contentDescription = desc
             gravity = Gravity.CENTER
             setTextColor(android.graphics.Color.WHITE)
-            textSize = 14f
+            textSize = 16f // bigger white icon
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(C.PRIMARY_A) // NOVA blue
+                setColor(C.PRIMARY_A) // NOVA blue #2856BC
                 setStroke(dp(1), 0xFF1E3A5F.toInt())
             }
-            elevation = dp(2).toFloat()
+            elevation = dp(4).toFloat()
+            // Ripple for professional feel
+            try {
+                val ripple = android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf(0x33FFFFFF),
+                    background, null
+                )
+                background = ripple
+            } catch (_: Exception) {}
             setOnClickListener { onClick() }
         }
     }
@@ -633,27 +662,112 @@ class MapActivity : ComponentActivity() {
     }
 
     private fun cycleLayers() {
-        val order = styleManager.orderedLayers
-        val idx = order.indexOf(currentLayerKey).let { if (it == -1) 0 else it }
+        // Kept for internal use – not used by UI directly (UI now uses chooser)
         val next = styleManager.nextLayer(currentLayerKey)
         currentLayerKey = next
         styleManager.setLayer(next)
         val cam = map?.cameraPosition
         val url = styleManager.currentStyleUrl()
+        val maxZ = when (next) {
+            "satellite", "hybrid" -> 19.0
+            "topo" -> 17.0
+            else -> 20.0
+        }
+        try { map?.setMaxZoomPreference(maxZ) } catch (_: Exception) {}
         map?.setStyle(Style.Builder().fromUri(url)) { style ->
             styleManager.applyStyle(style, map!!)
             savedRepo.attach(map!!)
             cam?.let { map?.moveCamera(CameraUpdateFactory.newCameraPosition(it)) }
-            if (isNavigating) {
-                navigationSession?.getRoute()?.let { navigationSession?.drawRoute(it) }
-            }
+            if (isNavigating) navigationSession?.getRoute()?.let { navigationSession?.drawRoute(it) }
         }
         android.widget.Toast.makeText(this, styleManager.layerLabel(next), android.widget.Toast.LENGTH_SHORT).show()
     }
 
     private fun showLayersSheet() {
-        // Instant cycle – no empty sheet, no cancel – per spec 8
-        cycleLayers()
+        // Elegant chooser – user picks manually, no auto-cycle
+        val sheet = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(16), dp(16), dp(16)) }
+        sheet.addView(TextView(this).apply {
+            text = "اختر طبقة الخريطة"
+            setTextColor(C.TEXT); textSize = 16f; typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+            gravity = Gravity.CENTER; setPadding(0, 0, 0, dp(12))
+        })
+        styleManager.orderedLayers.forEach { key ->
+            val isCurrent = key == currentLayerKey
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+                background = if (isCurrent) android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(10).toFloat()
+                    setColor(C.CARD_SOFT); setStroke(dp(1), C.PRIMARY_A)
+                } else android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = dp(10).toFloat()
+                    setColor(0xFFF8F9FA.toInt()); setStroke(dp(1), 0xFFE5E7EB.toInt())
+                }
+                isClickable = true; isFocusable = true
+                // Ripple
+                try {
+                    val ripple = android.graphics.drawable.RippleDrawable(
+                        android.content.res.ColorStateList.valueOf(0x11000000),
+                        background, null
+                    )
+                    background = ripple
+                } catch (_: Exception) {}
+            }
+            val dot = TextView(this).apply {
+                text = if (isCurrent) "●" else "○"
+                setTextColor(if (isCurrent) C.PRIMARY_A else C.TEXT2); textSize = 14f
+                setPadding(0, 0, dp(8), 0)
+            }
+            val label = TextView(this).apply {
+                text = styleManager.layerLabel(key)
+                setTextColor(if (isCurrent) C.PRIMARY_A else C.TEXT); textSize = 14f
+                layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            }
+            val check = TextView(this).apply {
+                text = if (isCurrent) "✓" else ""
+                setTextColor(C.PRIMARY_A); textSize = 14f
+            }
+            row.addView(dot); row.addView(label); row.addView(check)
+            row.setOnClickListener {
+                if (key != currentLayerKey) {
+                    currentLayerKey = key
+                    styleManager.setLayer(key)
+                    val cam = map?.cameraPosition
+                    val url = styleManager.currentStyleUrl()
+                    // Apply maxZoom limit per style to prevent over-zoom blur for raster
+                    val maxZ = when (key) {
+                        "satellite", "hybrid" -> 19.0
+                        "topo" -> 17.0
+                        else -> 20.0
+                    }
+                    try { map?.setMaxZoomPreference(maxZ) } catch (_: Exception) {}
+                    map?.setStyle(Style.Builder().fromUri(url)) { style ->
+                        styleManager.applyStyle(style, map!!)
+                        savedRepo.attach(map!!)
+                        cam?.let { map?.moveCamera(CameraUpdateFactory.newCameraPosition(it)) }
+                        if (isNavigating) navigationSession?.getRoute()?.let { navigationSession?.drawRoute(it) }
+                        // Ensure arrow on top after style change
+                        try { map?.getStyle { s -> ensureVehicleArrow(s); if (isNavigating) lastRoute?.let { r -> navigationSession?.drawRoute(r) } } } catch (_: Exception) {}
+                    }
+                    android.widget.Toast.makeText(this, styleManager.layerLabel(key), android.widget.Toast.LENGTH_SHORT).show()
+                }
+                // Dismiss dialog – find via parent
+                try { (sheet.parent as? View)?.let { } } catch (_: Exception) {}
+                // We'll dismiss via dialog reference – use NovaDialog's dialog
+                // Since we are inside row click, we need to dismiss the outer dialog – we'll do via view tag
+                // Simplest: close via dialog stored in sheet tag
+                try { (sheet.tag as? com.nova.gpspro.ui.NovaDialog)?.dismiss() } catch (_: Exception) {}
+            }
+            sheet.addView(row, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, dp(4), 0, dp(4)) })
+        }
+        sheet.addView(View(this).apply { setBackgroundColor(C.BORDER); layoutParams = LinearLayout.LayoutParams(-1, dp(1)).apply { setMargins(0, dp(12), 0, dp(12)) } })
+        sheet.addView(TextView(this).apply {
+            text = "وضع العرض: ${if (styleManager.is3DEnabled) "ثلاثي الأبعاد 3D" else "ثنائي الأبعاد 2D"} (زر 3D منفصل)"
+            setTextColor(C.TEXT2); textSize = 12f; gravity = Gravity.CENTER
+        })
+        val dlg = com.nova.gpspro.ui.NovaDialog(this).title("الطبقات").content(sheet).button("إغلاق", C.TEXT2) { it.dismiss() }
+        sheet.tag = dlg
+        dlg.show()
     }
 
     private fun showMapSettings() {
@@ -672,11 +786,20 @@ class MapActivity : ComponentActivity() {
                     styleManager.setLayer(key)
                     val cam = map?.cameraPosition
                     val url = styleManager.currentStyleUrl()
+                    val maxZ = when (key) {
+                        "satellite", "hybrid" -> 19.0
+                        "topo" -> 17.0
+                        else -> 20.0
+                    }
+                    try { map?.setMaxZoomPreference(maxZ) } catch (_: Exception) {}
                     map?.setStyle(Style.Builder().fromUri(url)) { style ->
                         styleManager.applyStyle(style, map!!)
                         savedRepo.attach(map!!)
                         cam?.let { map?.moveCamera(CameraUpdateFactory.newCameraPosition(it)) }
-                        if (isNavigating) navigationSession?.getRoute()?.let { navigationSession?.drawRoute(it) }
+                        if (isNavigating) {
+                            navigationSession?.getRoute()?.let { navigationSession?.drawRoute(it) }
+                            try { map?.getStyle { s -> ensureVehicleArrow(s) } } catch (_: Exception) {}
+                        }
                     }
                     android.widget.Toast.makeText(this@MapActivity, styleManager.layerLabel(key), android.widget.Toast.LENGTH_SHORT).show()
                 }
@@ -732,26 +855,16 @@ class MapActivity : ComponentActivity() {
             try {
                 try { (application as NovaApp).navigation.setDestination(dest) } catch (_: Exception) {}
                 navigationSession?.previewDestination(dest)
-                // ——— Road snapping: find nearest drivable road, keep original GPS —
+                // ——— Road snapping: nearest valid street, keep real GPS, connector only if inside building —
                 val snapped = try { routingRepo.snapToRoad(loc.latitude, loc.longitude) } catch (_: Exception) { null }
+                val snappedDist = if (snapped != null) haversineMeters(loc.latitude, loc.longitude, snapped.first, snapped.second) else Double.MAX_VALUE
                 val startLat: Double
                 val startLon: Double
                 var usedSnap = false
-                if (snapped != null) {
-                    val distToRoad = haversineMeters(loc.latitude, loc.longitude, snapped.first, snapped.second)
-                    // Only use snapped if within 75m and road is reachable (OSRM driving profile guarantees)
-                    if (distToRoad <= 75.0) {
-                        startLat = snapped.first; startLon = snapped.second; usedSnap = true
-                        // If far from road (>12m, e.g., inside house), show connector line
-                        if (distToRoad > 12.0) {
-                            try { navigationSession?.drawConnector(loc.latitude, loc.longitude, snapped.first, snapped.second) } catch (_: Exception) {}
-                        }
-                    } else {
-                        startLat = loc.latitude; startLon = loc.longitude
-                    }
+                if (snapped != null && snappedDist <= 75.0) {
+                    startLat = snapped.first; startLon = snapped.second; usedSnap = true
                 } else {
                     startLat = loc.latitude; startLon = loc.longitude
-                    // If snap failed but we are far (>75m) show no connector, but inform
                 }
                 val route = routingRepo.route(startLat, startLon, dest.latitude, dest.longitude)
                 if (!route.isRoad || route.coordinates.size < 2) {
@@ -767,8 +880,12 @@ class MapActivity : ComponentActivity() {
                     android.widget.Toast.makeText(this@MapActivity, msg, android.widget.Toast.LENGTH_LONG).show()
                     return@launch
                 }
-                // If we used snap, route already starts at road; keep connector visible during navigation
+                // Route starts at nearest valid road, not middle of building; keep real GPS and show connector if >12m (inside house)
                 navigationSession?.drawRoute(route)
+                // Draw connector above route but below arrow – after route so visible
+                if (usedSnap && snappedDist > 12.0 && snapped != null) {
+                    try { navigationSession?.drawConnector(loc.latitude, loc.longitude, snapped.first, snapped.second) } catch (_: Exception) {}
+                }
                 lastRoute = route
                 enterNavigationMode(route, loc, dest)
                 android.widget.Toast.makeText(this@MapActivity, if (usedSnap) "تم بدء التوجه من أقرب شارع: ${dest.name}" else "تم بدء التوجه: ${dest.name}", android.widget.Toast.LENGTH_SHORT).show()
@@ -804,12 +921,24 @@ class MapActivity : ComponentActivity() {
         }
         primaryActionBtn.setOnClickListener { endNavigation() }
         bottomBar.visibility = View.VISIBLE
-        // Real GPS: navigation camera – tilt 50-55, zoom 17.5, arrow at bottom-center so road ahead visible
+        // Real GPS: professional driving perspective – arrow below center, road ahead visible, smart zoom
         val bearing = bearingForLocation(loc)
         lastBearing = bearing
         try {
-            // Offset target forward so vehicle appears ~30% from bottom (like global navigation)
-            val offsetM = 95.0
+            val speed = try { loc.speed.toDouble() } catch (_: Exception) { 0.0 }
+            // Smart zoom: slower = closer, faster = wider to see further road; prevent excessive building zoom
+            val zoom = when {
+                speed < 2.8 -> 17.0 // <10 km/h
+                speed < 8.3 -> 16.6 // 10-30 km/h
+                speed < 16.6 -> 16.2 // 30-60 km/h
+                else -> 15.8
+            }.coerceIn(15.5, 17.5)
+            val tilt = when {
+                speed < 2.8 -> 45.0
+                speed < 8.3 -> 48.0
+                else -> 50.0
+            }
+            val offsetM = 75.0 // professional offset – show upcoming road, not too far
             val rad = Math.toRadians(bearing.toDouble())
             val latRad = Math.toRadians(loc.latitude)
             val dLat = offsetM * cos(rad) / 111320.0
@@ -818,8 +947,8 @@ class MapActivity : ComponentActivity() {
             val targetLon = loc.longitude + dLon
             val cam = CameraPosition.Builder()
                 .target(LatLng(targetLat, targetLon))
-                .zoom(17.8)
-                .tilt(52.0)
+                .zoom(zoom)
+                .tilt(tilt)
                 .bearing(bearing.toDouble())
                 .build()
             map?.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 900)
@@ -892,14 +1021,15 @@ class MapActivity : ComponentActivity() {
             else -> lastBearing
         }
         if (bearingLive || speed > 1.0) lastBearing = useBearing
-        // Map matching for arrow: only snap when GPS accuracy and road data sufficient
+        // Map matching for arrow: REAL GPS kept, snap ONLY when accuracy high and very close to road (user actually on road)
+        // If user inside house, keep GPS inside house and show connector – do NOT snap arrow to street before arrival
         var arrowLat = loc.latitude
         var arrowLon = loc.longitude
         try {
             val route = lastRoute
             val acc = if (loc.hasAccuracy()) loc.accuracy else 99f
-            if (route != null && acc < 35f && (bearingLive || speed > 1.5) && route.coordinates.size >= 2) {
-                // Find nearest road point within 30m
+            // Strict: accuracy <20m, bearing live or speed >2 m/s, and distance <12m
+            if (route != null && acc < 20f && (bearingLive || speed > 2.0) && route.coordinates.size >= 2) {
                 var bestDist = Double.MAX_VALUE
                 var bestLat = arrowLat
                 var bestLon = arrowLon
@@ -910,11 +1040,11 @@ class MapActivity : ComponentActivity() {
                     val projLat = lat1 + t * (lat2 - lat1)
                     val projLon = lon1 + t * (lon2 - lon1)
                     val d = haversineMeters(arrowLat, arrowLon, projLat, projLon)
-                    if (d < bestDist && d < 30.0) {
+                    if (d < bestDist && d < 12.0) {
                         bestDist = d; bestLat = projLat; bestLon = projLon
                     }
                 }
-                if (bestDist < 30.0) {
+                if (bestDist < 12.0) {
                     arrowLat = bestLat; arrowLon = bestLon
                 }
             }
@@ -927,9 +1057,21 @@ class MapActivity : ComponentActivity() {
             try { arrowLoc.setBearing(useBearing) } catch (_: Exception) {}
             updateVehiclePosition(arrowLoc, useBearing)
         } catch (_: Exception) {}
-        // Camera follow: offset so arrow at bottom-center, tilt 52, zoom 17.8, smooth
+        // Follow Camera: professional, smooth, no jumps, smart zoom per speed
         try {
-            val offsetM = 95.0
+            // Fix bearing when stopped – keep last, no random rotation (already handled above)
+            val zoom = when {
+                speed < 2.8 -> 17.0
+                speed < 8.3 -> 16.6
+                speed < 16.6 -> 16.2
+                else -> 15.8
+            }.coerceIn(15.5, 17.5)
+            val tilt = when {
+                speed < 2.8 -> 45.0
+                speed < 8.3 -> 48.0
+                else -> 50.0
+            }
+            val offsetM = 75.0
             val rad = Math.toRadians(useBearing.toDouble())
             val latRad = Math.toRadians(arrowLat)
             val dLat = offsetM * cos(rad) / 111320.0
@@ -938,8 +1080,8 @@ class MapActivity : ComponentActivity() {
             val targetLon = arrowLon + dLon
             val cam = CameraPosition.Builder()
                 .target(LatLng(targetLat, targetLon))
-                .zoom(17.8)
-                .tilt(52.0)
+                .zoom(zoom)
+                .tilt(tilt)
                 .bearing(useBearing.toDouble())
                 .build()
             map?.animateCamera(CameraUpdateFactory.newCameraPosition(cam), 700)
@@ -981,48 +1123,58 @@ class MapActivity : ComponentActivity() {
             val layer = SymbolLayer("nova-vehicle-arrow-layer", "nova-vehicle-source")
             layer.setProperties(
                 PropertyFactory.iconImage("nova-vehicle-arrow"),
-                PropertyFactory.iconSize(1.45f),
+                PropertyFactory.iconSize(1.0f), // bitmap is already 48dp (144px), no extra scale needed – professional 44–56dp
                 PropertyFactory.iconAllowOverlap(true),
                 PropertyFactory.iconIgnorePlacement(true),
                 PropertyFactory.iconAnchor("center"),
                 PropertyFactory.iconRotate(0f),
                 PropertyFactory.iconRotationAlignment("map")
             )
-            style.addLayer(layer)
+            // Ensure arrow is above route: add as topmost layer (if route already exists, this will be above)
+            try {
+                // Try to move above route layer if exists
+                val routeLayer = style.getLayer("nova-route-layer")
+                if (routeLayer != null) style.addLayer(layer) // will be top, above route
+                else style.addLayer(layer)
+            } catch (_: Exception) {
+                style.addLayer(layer)
+            }
         } catch (_: Exception) {}
     }
 
     private fun createBlueArrowBitmap(): android.graphics.Bitmap {
-        val size = 88
+        // 48dp ≈ 144px @ xxhdpi (meets 44–56dp spec, professional)
+        val size = 144
         val bmp = android.graphics.Bitmap.createBitmap(size, size, android.graphics.Bitmap.Config.ARGB_8888)
         val c = android.graphics.Canvas(bmp)
         val blue = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFF2E5BDA.toInt()
+            color = 0xFF2E5BDA.toInt() // NOVA blue
             style = android.graphics.Paint.Style.FILL
-            setShadowLayer(5f, 0f, 3f, 0x55000000)
+            setShadowLayer(8f, 0f, 4f, 0x55000000)
         }
         val white = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = 0xFFFFFFFF.toInt()
             style = android.graphics.Paint.Style.STROKE
-            strokeWidth = 3f
+            strokeWidth = 4f
         }
         val cx = size / 2f
         val cy = size / 2f
+        // Larger, clearer arrow – tip north
         val path = android.graphics.Path().apply {
-            moveTo(cx, 10f) // tip north – larger
-            lineTo(cx + 18f, 56f)
-            lineTo(cx, 46f)
-            lineTo(cx - 18f, 56f)
+            moveTo(cx, 18f) // tip
+            lineTo(cx + 30f, 98f)
+            lineTo(cx, 82f)
+            lineTo(cx - 30f, 98f)
             close()
         }
         c.drawPath(path, blue)
         c.drawPath(path, white)
-        // inner highlight
+        // inner highlight for 3D effect
         val inner = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = 0x66FFFFFF
             style = android.graphics.Paint.Style.FILL
         }
-        c.drawCircle(cx, 30f, 4f, inner)
+        c.drawCircle(cx, 52f, 7f, inner)
         return bmp
     }
 
