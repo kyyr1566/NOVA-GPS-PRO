@@ -31,11 +31,6 @@ android {
 }
 
 dependencies {
-    implementation("com.google.zxing:core:3.5.3")   // offline QR encode/decode (pure Java) – keeps original GPS/QR offline
-    // MapLibre Native — open source, vector/raster, online only
-    implementation("org.maplibre.gl:android-sdk:11.3.0")
-    // Lifecycle for MapView
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
-    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.zxing:core:3.5.3")   // offline QR encode/decode (pure Java)
     testImplementation("junit:junit:4.13.2")
 }
