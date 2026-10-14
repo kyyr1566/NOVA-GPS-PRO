@@ -51,16 +51,19 @@ jobs:
         if: failure()
         run: |
           echo "Annotating build log..."
-          TAIL=$(tail -n 60 build.log 2>/dev/null | tr '\n' '; ' | head -c 900)
-          if [ -z "$TAIL" ]; then TAIL="no log"; fi
-          echo "::error file=app/src/main/java/com/nova/gpspro/ui/RadarView.kt,line=1,title=BuildError::$TAIL"
-          echo "::warning file=app/src/main/java/com/nova/gpspro/ui/RadarPage.kt,line=1,title=BuildWarning::$TAIL"
-          # also dump to step summary for UI
+          echo "=== tail 400 ==="; tail -n 400 build.log 2>&1 | head -n 400
+          echo "=== grep e: ==="; grep -E "e: |error:" build.log 2>&1 | head -n 60
+          ERR=$(grep -E "e: |error:" build.log 2>&1 | head -n 5 | tr '\n' '; ' | head -c 900)
+          if [ -z "$ERR" ]; then ERR=$(tail -n 80 build.log 2>&1 | tr '\n' '; ' | head -c 900); fi
+          echo "::error file=app/src/main/java/com/nova/gpspro/ui/RadarView.kt,line=1,title=BuildError::$ERR"
           echo "### Build log tail" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -n 200 build.log >> $GITHUB_STEP_SUMMARY 2>&1 || echo "no log" >> $GITHUB_STEP_SUMMARY
+          tail -n 350 build.log >> $GITHUB_STEP_SUMMARY 2>&1 || echo "no log" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          cat build.log | tail -n 200
+          echo "### Error lines" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "e: |error:" build.log 2>&1 | head -n 60 >> $GITHUB_STEP_SUMMARY || echo "no error grep" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
