@@ -129,6 +129,24 @@ class DestinationsPage(act: MainActivity) : Page(act) {
         item("✎", R.string.edit, C.TEXT) { DestinationEditor(act, d) { _, _ -> act.message.success(c.getString(R.string.msg_updated)) }.show() }
         item("⤴", R.string.share, C.GOLD_DEEP) { share(d) }
         item("🗑", R.string.delete, C.RED) { confirmDelete(d) }
+        // Map navigation preview — does not auto-start, shows marker + route
+        run {
+            val t = c.text("🗺   الملاحة على الخريطة", 16f, C.PRIMARY_A, Fonts.medium).apply {
+                val r = c.dp(14).toFloat()
+                background = ripple(roundRect(C.CARD_SOFT, r, C.BORDER, c.dp(1)), r)
+                setPadding(c.dp(16), c.dp(14), c.dp(16), c.dp(14))
+                setOnClickListener {
+                    dlg.dismiss()
+                    val intent = android.content.Intent(c, com.nova.gpspro.map.MapActivity::class.java)
+                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_ID, d.id)
+                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LAT, d.latitude)
+                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LON, d.longitude)
+                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_NAME, d.name)
+                    c.startActivity(intent)
+                }
+            }
+            box.addView(t, lp().margins(b = c.dp(8)))
+        }
         dlg.content(box).button(c.getString(R.string.cancel), C.TEXT2) { it.dismiss() }.show()
     }
 

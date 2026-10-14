@@ -1,0 +1,24 @@
+{
+  "version": 8,
+  "name": "NOVA Dark Gold",
+  "metadata": { "maplibre:attribution": "© OpenStreetMap contributors" },
+  "sources": {
+    "carto-dark": {
+      "type": "raster",
+      "tiles": ["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png", "https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}@2x.png"],
+      "tileSize": 256,
+      "attribution": "© OpenStreetMap © CARTO"
+    },
+    "osm-raster-fallback": {
+      "type": "raster",
+      "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      "tileSize": 256,
+      "attribution": "© OpenStreetMap"
+    }
+  },
+  "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+  "layers": [
+    { "id": "background", "type": "background", "paint": { "background-color": "#0B1220" } },
+    { "id": "dark-tiles", "type": "raster", "source": "carto-dark", "paint": { "raster-opacity": 0.98 } }
+  ]
+}

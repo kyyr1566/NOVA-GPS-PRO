@@ -1,0 +1,27 @@
+{
+  "version": 8,
+  "name": "NOVA Terrain Hillshade",
+  "metadata": { "maplibre:attribution": "© OpenStreetMap | Terrain" },
+  "sources": {
+    "osm": {
+      "type": "raster",
+      "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      "tileSize": 256,
+      "attribution": "© OpenStreetMap"
+    },
+    "hillshade": {
+      "type": "raster-dem",
+      "tiles": ["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"],
+      "tileSize": 256,
+      "encoding": "terrarium",
+      "maxzoom": 15
+    }
+  },
+  "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+  "layers": [
+    { "id": "background", "type": "background", "paint": { "background-color": "#0B1220" } },
+    { "id": "osm-tiles", "type": "raster", "source": "osm", "paint": { "raster-opacity": 0.92 } },
+    { "id": "hillshade-layer", "type": "hillshade", "source": "hillshade", "paint": { "hillshade-exaggeration": 0.6, "hillshade-shadow-color": "#0B1220", "hillshade-highlight-color": "#D9A441" } }
+  ],
+  "terrain": { "source": "hillshade", "exaggeration": 1.1 }
+}

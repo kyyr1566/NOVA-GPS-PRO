@@ -1,0 +1,18 @@
+{
+  "version": 8,
+  "name": "NOVA Streets",
+  "metadata": { "maplibre:attribution": "© OpenStreetMap" },
+  "sources": {
+    "osm": {
+      "type": "raster",
+      "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      "tileSize": 256,
+      "attribution": "© OpenStreetMap"
+    }
+  },
+  "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+  "layers": [
+    { "id": "background", "type": "background", "paint": { "background-color": "#FAF7F0" } },
+    { "id": "osm-tiles", "type": "raster", "source": "osm" }
+  ]
+}

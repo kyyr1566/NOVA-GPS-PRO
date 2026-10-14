@@ -36,7 +36,8 @@ class NavigationPage(act: MainActivity) : Page(act) {
     init { navCol.apply {
         setPadding(c.dp(14), c.dp(8), c.dp(14), c.dp(6))
 
-        // 1) compact destination selector (still ≥ 48dp touch target)
+        // 1) destination selector + maps button (horizontal row)
+        val topRow = c.hbox()
         val sel = c.hbox().apply {
             val r = c.dp(16).toFloat()
             background = ripple(roundRect(C.CARD, r, C.BORDER, c.dp(1)), r); softElevation(1.5f)
@@ -55,7 +56,32 @@ class NavigationPage(act: MainActivity) : Page(act) {
         tcol.addView(destName)
         sel.addView(tcol, lp(0, weight = 1f).margins(s = c.dp(10)))
         sel.addView(c.text(if (c.isRtl()) "‹" else "›", 22f, C.GOLD, Fonts.light), lp(ViewGroup.LayoutParams.WRAP_CONTENT))
-        addView(sel)
+        topRow.addView(sel, lp(0, weight = 1f).margins(e = c.dp(8)))
+        // Maps button (36-44dp, RTL)
+        val mapBtn = c.text("🗺  الخرائط", 14f, android.graphics.Color.WHITE, Fonts.medium).apply {
+            gravity = Gravity.CENTER
+            val r = c.dp(14).toFloat()
+            val bg = android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.TL_BR, intArrayOf(C.PRIMARY_A, C.PRIMARY_B)).apply { shape = android.graphics.drawable.GradientDrawable.RECTANGLE; cornerRadius = r }
+            background = android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x33FFFFFF), bg, null)
+            softElevation(2f)
+            setPadding(c.dp(12), c.dp(10), c.dp(12), c.dp(10))
+            minimumHeight = c.dp(48)
+            isClickable = true; isFocusable = true
+            contentDescription = "الخرائط"
+            setOnClickListener {
+                val dest = act.app.navigation.state.destination
+                val intent = android.content.Intent(c, com.nova.gpspro.map.MapActivity::class.java)
+                if (dest != null) {
+                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_ID, dest.id)
+                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LAT, dest.latitude)
+                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_LON, dest.longitude)
+                    intent.putExtra(com.nova.gpspro.map.MapActivity.EXTRA_DEST_NAME, dest.name)
+                }
+                c.startActivity(intent)
+            }
+        }
+        topRow.addView(mapBtn, LinearLayout.LayoutParams(c.dp(110), c.dp(48)))
+        addView(topRow)
 
         // 2) destination info: distance + status / arrival message (outside the arrow area)
         infoBox.addView(bigDistance, lp(ViewGroup.LayoutParams.WRAP_CONTENT))
