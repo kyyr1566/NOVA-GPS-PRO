@@ -229,4 +229,17 @@
     <string name="activation_error_network">Could not connect. Check your internet connection and try again.</string>
     <string name="activation_error_server">A temporary server problem occurred. Please try again shortly.</string>
     <string name="activation_success">License activated. Welcome to RMG-GPS-Pro.</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_skip">Skip</string>
+    <string name="onboarding_next">Next</string>
+    <string name="onboarding_start">Start now</string>
+    <string name="onboarding_title_1">Precise GPS in your hands</string>
+    <string name="onboarding_desc_1">Track your current location accurately, and view coordinates and satellite connection status clearly.</string>
+    <string name="onboarding_title_2">Navigate precisely to your destination</string>
+    <string name="onboarding_desc_2">Use the smart navigation arrow to reach your saved destination, with clear speed and trip data.</string>
+    <string name="onboarding_title_3">Discover and share locations easily</string>
+    <string name="onboarding_desc_3">Use radar, import or export locations, and quickly create or scan QR codes professionally.</string>
+    <string name="onboarding_gps_connected">GPS Connected</string>
+    <string name="onboarding_accuracy_mock">Accuracy ± 3.5 m</string>
 </resources>

@@ -31,6 +31,9 @@ import com.nova.gpspro.settings.Units
 import com.nova.gpspro.license.ActivationCancellation
 import com.nova.gpspro.license.ActivationView
 import com.nova.gpspro.license.LicenseActivationResult
+import com.nova.gpspro.onboarding.OnboardingManager
+import com.nova.gpspro.onboarding.OnboardingView
+import com.nova.gpspro.onboarding.ShortSplashView
 import com.nova.gpspro.portal.QrCodec
 import com.nova.gpspro.portal.QrScanner
 import com.nova.gpspro.ui.*
@@ -47,6 +50,7 @@ class MainActivity : Activity() {
     private lateinit var activityRoot: FrameLayout
     private var activationView: ActivationView? = null
     private var mainUiReady = false
+    private var onboardingShowing = false
     private var activationInFlight = false
     private var activationCancellation: ActivationCancellation? = null
     private var activationExecutor: ExecutorService? = null
@@ -98,7 +102,13 @@ class MainActivity : Activity() {
             showActivationScreen()
         } else {
             setMainSystemBars()
-            createMainUi(showSplash = savedInstanceState == null)
+            if (!OnboardingManager.isCompleted(this)) {
+                showOnboardingFlow()
+            } else {
+                // Short clean splash (700ms) then main UI — replaces long 4s splash
+                if (savedInstanceState == null) showShortSplashThenMain()
+                else createMainUi(showSplash = false)
+            }
         }
     }
 
@@ -120,6 +130,35 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun showOnboardingFlow() {
+        onboardingShowing = true
+        splashShowing = true
+        val splash = ShortSplashView(this) {
+            splashShowing = false
+            activityRoot.removeAllViews()
+            activationView = null
+            onboardingShowing = true
+            val onboarding = OnboardingView(this) {
+                onboardingShowing = false
+                createMainUi(showSplash = false)
+            }
+            activityRoot.addView(onboarding, FrameLayout.LayoutParams(-1, -1))
+        }
+        activityRoot.addView(splash, FrameLayout.LayoutParams(-1, -1))
+        splash.start()
+    }
+
+    private fun showShortSplashThenMain() {
+        splashShowing = true
+        val splash = ShortSplashView(this) {
+            splashShowing = false
+            createMainUi(showSplash = false)
+            if (isStartedFlag) maybeAskPermission()
+        }
+        activityRoot.addView(splash, FrameLayout.LayoutParams(-1, -1))
+        splash.start()
+    }
+
     private fun createMainUi(showSplash: Boolean) {
         activityRoot.removeAllViews()
         activationView = null
@@ -138,10 +177,11 @@ class MainActivity : Activity() {
         message = CenterMessage(activityRoot)
         mainUiReady = true
 
-        // Keep the existing launch splash for licensed launches and after a successful activation.
+        // Short clean splash — replaces long 4s SplashView (now handled before createMainUi for fresh launches).
+        // Kept for safety if any path still calls with showSplash=true.
         splashShowing = showSplash
         if (showSplash) {
-            val splash = SplashView(this, app.gps) {
+            val splash = ShortSplashView(this) {
                 splashShowing = false
                 if (isStartedFlag) maybeAskPermission()
             }
@@ -181,7 +221,11 @@ class MainActivity : Activity() {
                                     current = 0
                                     activationExecutor?.shutdown()
                                     activationExecutor = null
-                                    createMainUi(showSplash = true)
+                                    if (!OnboardingManager.isCompleted(this@MainActivity)) {
+                                        showOnboardingFlow()
+                                    } else {
+                                        showShortSplashThenMain()
+                                    }
                                 }
                             }, ACTIVATION_SUCCESS_DELAY_MS)
                         }
@@ -369,9 +413,14 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         isStartedFlag = true
+        if (onboardingShowing || splashShowing) return
         if (!mainUiReady && app.licenseManager.isActivated()) {
             current = 0
-            createMainUi(showSplash = true)
+            if (!OnboardingManager.isCompleted(this)) {
+                showOnboardingFlow()
+            } else {
+                createMainUi(showSplash = false)
+            }
             return
         }
         if (!mainUiReady) return

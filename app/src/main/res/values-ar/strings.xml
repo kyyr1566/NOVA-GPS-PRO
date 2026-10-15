@@ -226,4 +226,17 @@
     <string name="activation_error_network">تعذّر الاتصال. تحقّق من اتصال الإنترنت ثم حاول مجددًا.</string>
     <string name="activation_error_server">حدثت مشكلة مؤقتة في الخادم. حاول مجددًا بعد قليل.</string>
     <string name="activation_success">تم تفعيل الترخيص. أهلًا بك في RMG-GPS-Pro.</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_skip">تخطي</string>
+    <string name="onboarding_next">التالي</string>
+    <string name="onboarding_start">ابدأ الآن</string>
+    <string name="onboarding_title_1">دقة GPS بين يديك</string>
+    <string name="onboarding_desc_1">تابع موقعك الحالي بدقة، واطلع على الإحداثيات وحالة الاتصال بالأقمار الصناعية بسهولة ووضوح.</string>
+    <string name="onboarding_title_2">اتجه بدقة نحو وجهتك</string>
+    <string name="onboarding_desc_2">استخدم سهم الملاحة الذكي للوصول إلى وجهتك أو موقعك المحفوظ، مع متابعة السرعة وبيانات الرحلة بوضوح.</string>
+    <string name="onboarding_title_3">اكتشف وشارك مواقعك بسهولة</string>
+    <string name="onboarding_desc_3">استخدم الرادار، واستورد أو صدّر المواقع، وأنشئ أو امسح رموز QR بسرعة واحترافية.</string>
+    <string name="onboarding_gps_connected">GPS متصل</string>
+    <string name="onboarding_accuracy_mock">الدقة ± 3.5 م</string>
 </resources>
