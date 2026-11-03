@@ -6,18 +6,21 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import com.nova.gpspro.R
 import com.nova.gpspro.ui.Fonts
 import com.nova.gpspro.ui.dp
+import com.nova.gpspro.ui.dpf
 import com.nova.gpspro.ui.text
 import com.nova.gpspro.ui.vbox
 
 /**
- * Short, clean splash — 700ms — ivory background, centered logo + name.
- * No messages, no dial, no GPS dependency. Used before onboarding or main UI.
+ * Short, luxury splash — 700ms — ivory background (#F7F4EC), white emblem card with royal-blue
+ * RMG navigation arrow (#2457D6), app name and concise tagline.
  */
 class ShortSplashView(
     ctx: Context,
@@ -27,37 +30,43 @@ class ShortSplashView(
     private val handler = Handler(Looper.getMainLooper())
     private var finished = false
     private val ivory = Color.parseColor("#F7F4EC")
-    private val primary = Color.parseColor("#2F5FE3")
+    private val royalBlue = Color.parseColor("#2457D6")
+    private val white = Color.parseColor("#FFFFFF")
+    private val border = Color.parseColor("#E6DEC9")
+    private val muted = Color.parseColor("#756F65")
+    private val shadowTint = Color.parseColor("#2E2457D6")
 
-    private val logo = ImageView(ctx).apply {
-        setImageResource(R.drawable.splash_icon)
-        scaleType = ImageView.ScaleType.FIT_CENTER
-        adjustViewBounds = true
-        // subtle rounded elevation
-        background = GradientDrawable().apply {
+    private val logoBadge = FrameLayout(ctx).apply {
+        background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(white, Color.parseColor("#FBF9F4"))
+        ).apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = ctx.dp(24).toFloat()
-            setColor(Color.TRANSPARENT)
+            cornerRadius = ctx.dpf(28f)
+            setStroke(ctx.dp(1), border)
         }
-        clipToOutline = true
-        elevation = ctx.dp(6).toFloat()
-        outlineProvider = object : android.view.ViewOutlineProvider() {
-            override fun getOutline(view: android.view.View, outline: android.graphics.Outline) {
-                outline.setRoundRect(0, 0, view.width, view.height, ctx.dp(24).toFloat())
-            }
+        elevation = ctx.dpf(8f)
+        outlineAmbientShadowColor = shadowTint
+        outlineSpotShadowColor = shadowTint
+        val arrowIv = ImageView(ctx).apply {
+            setImageResource(R.drawable.splash_icon)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            adjustViewBounds = true
+            setPadding(ctx.dp(17), ctx.dp(15), ctx.dp(17), ctx.dp(17))
         }
+        addView(arrowIv, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT, Gravity.CENTER))
         alpha = 0f
-        scaleX = 0.92f
-        scaleY = 0.92f
+        scaleX = 0.90f
+        scaleY = 0.90f
     }
 
-    private val title = ctx.text(ctx.getString(R.string.app_name), 24f, primary, Fonts.medium).apply {
+    private val title = ctx.text(ctx.getString(R.string.app_name), 24f, royalBlue, Fonts.bold).apply {
         gravity = Gravity.CENTER
         letterSpacing = 0.06f
         alpha = 0f
     }
 
-    private val tagline = ctx.text(ctx.getString(R.string.splash_short), 12f, Color.parseColor("#8E877F"), Fonts.regular).apply {
+    private val tagline = ctx.text(ctx.getString(R.string.splash_short), 12.5f, muted, Fonts.regular).apply {
         gravity = Gravity.CENTER
         letterSpacing = 0.04f
         alpha = 0f
@@ -67,10 +76,10 @@ class ShortSplashView(
         setBackgroundColor(ivory)
         isClickable = true
         val col = ctx.vbox().apply { gravity = Gravity.CENTER }
-        col.addView(logo, LinearLayout.LayoutParams(ctx.dp(120), ctx.dp(120)).apply { gravity = Gravity.CENTER })
+        col.addView(logoBadge, LinearLayout.LayoutParams(ctx.dp(112), ctx.dp(112)).apply { gravity = Gravity.CENTER })
         col.addView(title, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.CENTER
-            topMargin = ctx.dp(18)
+            topMargin = ctx.dp(20)
         })
         col.addView(tagline, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.CENTER
@@ -80,19 +89,18 @@ class ShortSplashView(
     }
 
     fun start() {
-        // fade-in
-        logo.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(260).setInterpolator(android.view.animation.DecelerateInterpolator()).start()
-        title.animate().alpha(1f).setStartDelay(120).setDuration(280).start()
-        tagline.animate().alpha(1f).setStartDelay(180).setDuration(280).start()
+        logoBadge.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(260)
+            .setInterpolator(DecelerateInterpolator()).start()
+        title.animate().alpha(1f).setStartDelay(100).setDuration(260).start()
+        tagline.animate().alpha(1f).setStartDelay(160).setDuration(260).start()
         handler.postDelayed({ finish() }, 700)
     }
 
     private fun finish() {
         if (finished) return
         finished = true
-        // fade-out
-        animate().alpha(0f).setDuration(220).withEndAction {
-            (parent as? android.view.ViewGroup)?.removeView(this)
+        animate().alpha(0f).setDuration(200).withEndAction {
+            (parent as? ViewGroup)?.removeView(this)
             onFinished()
         }.start()
     }

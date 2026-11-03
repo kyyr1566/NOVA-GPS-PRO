@@ -24,12 +24,24 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run unit tests (theme contrast, GPS signal, existing suites)
-        continue-on-error: true
+      - name: Run unit tests (onboarding, icons, theme, GPS, radar, portal, splash)
         run: |
           chmod +x gradlew
           set -o pipefail
-          ./gradlew --no-daemon --stacktrace testDebugUnitTest 2>&1 | tee test.log
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest \
+            --tests "com.nova.gpspro.OnboardingManagerTest" \
+            --tests "com.nova.gpspro.ThemeSourceTest" \
+            --tests "com.nova.gpspro.ThemeContrastTest" \
+            --tests "com.nova.gpspro.SplashTimelineTest" \
+            --tests "com.nova.gpspro.PortalLogicTest" \
+            --tests "com.nova.gpspro.LocxCodecTest" \
+            --tests "com.nova.gpspro.GpsSignalTest" \
+            --tests "com.nova.gpspro.RadarPlotTest" \
+            --tests "com.nova.gpspro.CardPositionFilterTest" \
+            --tests "com.nova.gpspro.DestDistanceTest" \
+            --tests "com.nova.gpspro.FitTest" \
+            --tests "com.nova.gpspro.NavFitTest" \
+            --tests "com.nova.gpspro.SpeedoModeTest" 2>&1 | tee test.log
 
       - name: Build Debug APK
         run: |

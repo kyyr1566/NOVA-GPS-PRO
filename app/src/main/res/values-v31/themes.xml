@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Android 12+ system launch splash: ivory, gold icon → flows straight into the in-app splash -->
+    <!-- Android 12+ system launch splash: ivory surface + white emblem disc + royal-blue RMG arrow -->
     <style name="Theme.Nova" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/nova_bg</item>
         <item name="android:statusBarColor">@color/nova_bg</item>
@@ -13,7 +13,7 @@
         <item name="android:textColorHighlight">#552457D6</item>
         <item name="android:windowSplashScreenBackground">@color/nova_bg</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_fg</item>
-        <item name="android:windowSplashScreenIconBackgroundColor">@color/nova_bg</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">#FFFFFF</item>
     </style>
 
     <!-- 🌙 Dark appearance (chosen in Settings → المظهر) -->
@@ -30,6 +30,6 @@
         <item name="android:colorBackground">@color/nova_bg_dark</item>
         <item name="android:windowSplashScreenBackground">@color/nova_bg_dark</item>
         <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_launcher_fg</item>
-        <item name="android:windowSplashScreenIconBackgroundColor">@color/nova_bg_dark</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">#F7F4EC</item>
     </style>
 </resources>

@@ -24,23 +24,23 @@ import kotlin.math.min
  */
 class SplashView(ctx: Context, private val gps: LocationEngine, private val onFinished: () -> Unit) : FrameLayout(ctx) {
 
-    private val iconView = android.widget.ImageView(ctx).apply {
-        setImageResource(R.drawable.splash_icon)
-        scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
-        adjustViewBounds = true
-        // Rounded corners + elevation for professional look, preserve aspect ratio
-        background = android.graphics.drawable.GradientDrawable().apply {
-            shape = android.graphics.drawable.GradientDrawable.RECTANGLE
-            cornerRadius = ctx.dp(32).toFloat()
-            setColor(android.graphics.Color.TRANSPARENT)
+    private val iconView = FrameLayout(ctx).apply {
+        background = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(0xFFFFFFFF.toInt(), 0xFFF7F4EC.toInt())
+        ).apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = ctx.dp(34).toFloat()
+            setStroke(ctx.dp(1), 0xFFE6DEC9.toInt())
         }
-        clipToOutline = true
-        elevation = ctx.dp(12).toFloat()
-        outlineProvider = object : android.view.ViewOutlineProvider() {
-            override fun getOutline(view: android.view.View, outline: android.graphics.Outline) {
-                outline.setRoundRect(0, 0, view.width, view.height, ctx.dp(32).toFloat())
-            }
+        elevation = ctx.dp(10).toFloat()
+        val iv = android.widget.ImageView(ctx).apply {
+            setImageResource(R.drawable.splash_icon)
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+            adjustViewBounds = true
+            setPadding(ctx.dp(22), ctx.dp(20), ctx.dp(22), ctx.dp(22))
         }
+        addView(iv, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT, Gravity.CENTER))
     }
     private val title = ctx.text(ctx.getString(R.string.app_name), 27f, C.GOLD_DEEP, Fonts.medium).apply {
         gravity = Gravity.CENTER; letterSpacing = 0.24f

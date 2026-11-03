@@ -65,25 +65,26 @@ class ActivationView(
         scroll.addView(contentFrame, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         addView(scroll, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
-        val mark = android.widget.ImageView(context).apply {
-            setImageResource(R.drawable.splash_icon)
-            scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
-            // Same RMG icon, rounded 12dp, preserve aspect ratio
-            background = GradientDrawable().apply {
+        val mark = FrameLayout(context).apply {
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(0xFFFFFFFF.toInt(), 0xFFF7F4EC.toInt())
+            ).apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = context.dp(12).toFloat()
-                setColor(android.graphics.Color.TRANSPARENT)
+                cornerRadius = context.dp(13).toFloat()
+                setStroke(context.dp(1), 0xFFE5DEC9.toInt())
             }
-            clipToOutline = true
             elevation = context.dp(7).toFloat()
-            outlineProvider = object : android.view.ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: android.graphics.Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, context.dp(12).toFloat())
-                }
+            val arrowIv = android.widget.ImageView(context).apply {
+                setImageResource(R.drawable.splash_icon)
+                scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                adjustViewBounds = true
+                setPadding(context.dp(7), context.dp(6), context.dp(7), context.dp(7))
             }
+            addView(arrowIv, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT, Gravity.CENTER))
         }
         val brandRow = LinearLayout(context).apply { gravity = Gravity.CENTER }
-        brandRow.addView(mark, LinearLayout.LayoutParams(context.dp(42), context.dp(42)))
+        brandRow.addView(mark, LinearLayout.LayoutParams(context.dp(44), context.dp(44)))
         brandRow.addView(context.text("RMG-GPS-Pro", 16f, ActivationColors.ICE, Fonts.medium).apply {
             letterSpacing = 0.14f
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {

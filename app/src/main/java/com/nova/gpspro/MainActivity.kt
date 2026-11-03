@@ -133,11 +133,13 @@ class MainActivity : Activity() {
     private fun showOnboardingFlow() {
         onboardingShowing = true
         splashShowing = true
+        setIvoryIntroSystemBars()
         val splash = ShortSplashView(this) {
             splashShowing = false
             activityRoot.removeAllViews()
             activationView = null
             onboardingShowing = true
+            setIvoryIntroSystemBars()
             val onboarding = OnboardingView(this) {
                 onboardingShowing = false
                 createMainUi(showSplash = false)
@@ -150,6 +152,7 @@ class MainActivity : Activity() {
 
     private fun showShortSplashThenMain() {
         splashShowing = true
+        setIvoryIntroSystemBars()
         val splash = ShortSplashView(this) {
             splashShowing = false
             createMainUi(showSplash = false)
@@ -315,6 +318,21 @@ class MainActivity : Activity() {
         // Fallback for older flags (activation screen must stay dark).
         val lightFlags = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         window.decorView.systemUiVisibility = window.decorView.systemUiVisibility and lightFlags.inv()
+    }
+
+    private fun setIvoryIntroSystemBars() {
+        val ivoryBar = 0xFFF7F4EC.toInt()
+        window.statusBarColor = ivoryBar
+        window.navigationBarColor = ivoryBar
+        window.insetsController?.let { controller ->
+            val lightBars = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            controller.setSystemBarsAppearance(lightBars, lightBars)
+            return
+        }
+        var flags = window.decorView.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        if (Build.VERSION.SDK_INT >= 26) flags = flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        window.decorView.systemUiVisibility = flags
     }
 
     private fun setMainSystemBars() {
