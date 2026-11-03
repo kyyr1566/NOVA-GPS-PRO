@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.net.wifi.WpsInfo
@@ -19,7 +20,10 @@ import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceRequest
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import java.net.DatagramSocket
 import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -32,7 +36,10 @@ data class DiscoveredPttSession(
     val tcpPort: Int,
     val protocolVersion: Int,
     val lastSeenMs: Long,
-    val discoveredViaFallback: Boolean = false
+    val discoveredViaFallback: Boolean = false,
+    val groupOwnerIpHint: String = "",
+    val groupNetworkName: String = "",
+    val groupPassphrase: String = ""
 )
 
 enum class WifiEnvironmentIssue {
@@ -44,6 +51,7 @@ enum class WifiEnvironmentIssue {
     HOSTING_GROUP_FAILED,
     DISCOVERY_FAILED,
     HOTSPOT_START_FAILED,
+    P2P_LINK_FAILED,
     CONNECT_FAILED
 }
 
@@ -55,7 +63,7 @@ sealed class LocalHotspotGatewayCheck {
 
 /**
  * Transport abstraction allowing deterministic unit & regression testing of [PttRepository]
- * (including simulated Wi-Fi off, callback failures, discovery timeouts, and link drops).
+ * (including simulated Wi-Fi off, callback failures, discovery timeouts, and P2P link drops).
  */
 interface PttRadioTransport {
     interface Listener {
@@ -100,12 +108,31 @@ interface PttRadioTransport {
         onFailed: (WifiEnvironmentIssue, String) -> Unit
     )
 
+    fun connectToSession(
+        session: DiscoveredPttSession,
+        onInitiated: () -> Unit,
+        onFailed: (WifiEnvironmentIssue, String) -> Unit
+    ) {
+        connectToHostDevice(session.deviceAddress, onInitiated, onFailed)
+    }
+
+    /**
+     * Binds a TCP [Socket] to the active local Wi-Fi / P2P network so Android's fwmark router
+     * never misroutes offline packets over mobile cellular data (4G/5G).
+     */
+    fun bindSocketToRadioNetwork(socket: Socket, remoteIp: String, viaLocalHotspot: Boolean): Boolean = false
+
+    /**
+     * Binds a UDP [DatagramSocket] to the active local Wi-Fi network when operating over Local Hotspot.
+     */
+    fun bindDatagramToRadioNetwork(socket: DatagramSocket, remoteIp: String, viaLocalHotspot: Boolean): Boolean = false
+
     fun teardownRadio()
 }
 
 /**
  * Low-level P2P driver interface so the exact sequencing logic of [WifiDirectManager]
- * (clearLocalServices -> addLocalService -> createGroup -> groupFormed, and DNS-SD -> Peer fallback)
+ * (createGroup -> requestGroupDetails -> addLocalService, and Direct-SSID connect -> MAC fallback)
  * can be verified in JVM unit tests with injected callback failures.
  */
 interface P2pDriver {
@@ -119,7 +146,13 @@ interface P2pDriver {
     data class GroupLinkState(
         val groupFormed: Boolean,
         val isGroupOwner: Boolean,
-        val groupOwnerIp: String?
+        val groupOwnerIp: String?,
+        val networkName: String = ""
+    )
+
+    data class HostedGroupCredentials(
+        val networkName: String,
+        val passphrase: String
     )
 
     val isHardwareSupported: Boolean
@@ -133,6 +166,9 @@ interface P2pDriver {
     fun removeExistingGroupIfAny(cb: () -> Unit)
     fun createGroup(cb: (Boolean, Int) -> Unit)
     fun requestLinkState(cb: (GroupLinkState?) -> Unit)
+    fun requestHostedGroupCredentials(cb: (HostedGroupCredentials?) -> Unit) {
+        cb(null)
+    }
 
     fun setDnsSdListeners(
         onService: (instanceName: String, regType: String, deviceAddress: String, deviceName: String) -> Unit,
@@ -145,6 +181,9 @@ interface P2pDriver {
     fun stopPeerDiscovery()
     fun requestPeers(cb: (List<PeerSnapshot>) -> Unit)
 
+    fun connectWithGroupCredentials(networkName: String, passphrase: String, cb: (Boolean, Int) -> Unit) {
+        cb(false, WifiDirectManager.REASON_P2P_UNSUPPORTED)
+    }
     fun connect(deviceAddress: String, cb: (Boolean, Int) -> Unit)
     fun cancelConnect()
     fun removeGroupNow()
@@ -186,8 +225,17 @@ class WifiDirectManager(
         private const val MAX_DISCOVERY_ROUNDS = 3
         private const val DNS_PHASE_DURATION_MS = 5_000L
         private const val PEER_FALLBACK_DURATION_MS = 3_000L
-        private const val GROUP_FORM_TIMEOUT_MS = 8_500L
-        private const val HOST_BEACON_REFRESH_MS = 14_000L
+        private const val GROUP_FORM_TIMEOUT_MS = 9_000L
+
+        // Client P2P radio association windows (Direct SSID/PSK fast path + MAC PBC fallback)
+        private const val DIRECT_CRED_LINK_TIMEOUT_MS = 8_000L
+        private const val MAC_FALLBACK_LINK_TIMEOUT_MS = 10_000L
+
+        fun isValidDirectGroupSsid(ssid: String): Boolean =
+            ssid.startsWith("DIRECT-") && ssid.length in 9..32
+
+        fun isValidDirectGroupPassphrase(psk: String): Boolean =
+            psk.length in 8..63
     }
 
     override var listener: PttRadioTransport.Listener? = null
@@ -210,7 +258,11 @@ class WifiDirectManager(
     private val scanning = AtomicBoolean(false)
     private val hostingActive = AtomicBoolean(false)
     private val connectInProgress = AtomicBoolean(false)
+    private val clientLinkEstablished = AtomicBoolean(false)
     private val operationGen = AtomicInteger(0)
+
+    @Volatile
+    private var activeTargetIpHint: String = ""
 
     private val discoveredByAddress = ConcurrentHashMap<String, DiscoveredPttSession>()
     private val cachedTxtByAddress = ConcurrentHashMap<String, Map<String, String>>()
@@ -220,19 +272,7 @@ class WifiDirectManager(
     private var discoveryStepRunnable: Runnable? = null
     private var groupFormPollRunnable: Runnable? = null
     private var connectPollRunnable: Runnable? = null
-    private val hostBeaconRunnable = object : Runnable {
-        override fun run() {
-            if (!hostingActive.get() || connectInProgress.get()) return
-            driver.discoverPeers { ok, reason ->
-                if (!ok) {
-                    PttDiagnostics.warn("HostBeacon", "discoverPeers refresh returned ${PttDiagnostics.p2pReasonName(reason)}")
-                }
-            }
-            if (hostingActive.get()) {
-                scheduler.postDelayed(HOST_BEACON_REFRESH_MS, this)
-            }
-        }
-    }
+    private var connectStageTimeoutRunnable: Runnable? = null
 
     // Active hosting wait callback (completed once groupFormed == true)
     @Volatile
@@ -262,20 +302,29 @@ class WifiDirectManager(
                     }
                     if (p2pInfo != null && p2pInfo.groupFormed) {
                         val goIp = p2pInfo.groupOwnerAddress?.hostAddress
+                            ?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+                            ?: activeTargetIpHint.takeIf { it.isNotBlank() && !p2pInfo.isGroupOwner }
                         if (!goIp.isNullOrBlank()) {
                             onGroupLinkObserved(p2pInfo.isGroupOwner, goIp)
                         } else {
                             driver.requestLinkState { st ->
-                                if (st != null && st.groupFormed && !st.groupOwnerIp.isNullOrBlank()) {
-                                    onGroupLinkObserved(st.isGroupOwner, st.groupOwnerIp)
+                                val resolvedIp = st?.groupOwnerIp?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+                                    ?: resolveLocalP2pInterfaceIp().takeIf { p2pInfo.isGroupOwner }
+                                    ?: activeTargetIpHint.takeIf { it.isNotBlank() }
+                                if (st != null && st.groupFormed && !resolvedIp.isNullOrBlank()) {
+                                    onGroupLinkObserved(st.isGroupOwner, resolvedIp)
                                 }
                             }
                         }
                     } else {
+                        // CRITICAL: Ignore sticky/transient groupFormed=false broadcasts while connecting!
+                        // Only fire onP2pLinkDisconnected if a client P2P link had ALREADY been established.
                         if (!connectInProgress.get() && !hostingActive.get()) {
-                            listener?.onP2pLinkDisconnected()
+                            if (clientLinkEstablished.compareAndSet(true, false)) {
+                                PttDiagnostics.warn("Broadcast", "Established client P2P link dropped")
+                                listener?.onP2pLinkDisconnected()
+                            }
                         } else if (!connectInProgress.get() && hostingActive.get() && pendingHostReadyCallback == null) {
-                            // Host's own group collapsed externally (e.g. user toggled Wi-Fi off)
                             if (!isWifiEnabled()) {
                                 handlePlatformWifiDisabled()
                             }
@@ -322,12 +371,14 @@ class WifiDirectManager(
 
     /**
      * Sequenced Host startup:
-     * 1. Environment & permission verification
+     * 1. Pre-flight verification (permissions, Wi-Fi ON, Location toggle on API 30–32)
      * 2. Channel initialization & receiver registration
      * 3. Stop conflicting scans + remove any stale P2P group (await callback)
-     * 4. clearLocalServices -> addLocalService ("rmgptt", "_rmgptt._tcp") with BUSY retry
-     * 5. createGroup with BUSY retry
-     * 6. Verify actual group formation (groupFormed == true & valid Group Owner IP) BEFORE invoking [onReady]!
+     * 4. Register initial DNS-SD service + create Autonomous P2P Group (`createGroup`)
+     * 5. Wait for `groupFormed == true` & valid Group Owner IP
+     * 6. Query actual `DIRECT-...` SSID & passphrase via `requestGroupInfo` and update DNS-SD TXT
+     *    (`gn`, `gp`, `goip`, `port`) so Android 11–16 clients can join directly via `WifiP2pConfig.Builder`
+     *    without WPS PBC timeouts, MAC randomization mismatches, or hidden OS invitation dialogs!
      */
     override fun startHostingGroup(
         sessionId: String,
@@ -339,25 +390,29 @@ class WifiDirectManager(
         val gen = operationGen.incrementAndGet()
         cancelScheduledTasks()
         scanning.set(false)
-        hostingActive.set(false)
+        connectInProgress.set(false)
+        clientLinkEstablished.set(false)
+        hostingActive.set(true)
         pendingHostReadyCallback = null
 
         val env = diagnoseEnvironment()
         if (env != WifiEnvironmentIssue.NONE) {
+            hostingActive.set(false)
             onError(env, "Pre-flight check failed: $env")
             return
         }
         if (!driver.ensureInitialized()) {
+            hostingActive.set(false)
             PttDiagnostics.error("HostStart", "WifiP2pManager.initialize returned null channel")
             onError(WifiEnvironmentIssue.P2P_UNSUPPORTED, "Channel initialization failed")
             return
         }
         ensureReceiverRegistered()
 
-        val txtRecord = linkedMapOf(
+        val baseTxtRecord = linkedMapOf(
             "v" to PttProtocol.PROTOCOL_VERSION.toString(),
-            "sid" to sessionId.take(24),
-            "host" to hostDisplayName.take(28),
+            "sid" to sessionId.take(20),
+            "host" to hostDisplayName.take(24),
             "port" to tcpPort.toString()
         )
 
@@ -368,15 +423,62 @@ class WifiDirectManager(
         driver.removeExistingGroupIfAny {
             if (operationGen.get() != gen) return@removeExistingGroupIfAny
             if (!driver.isWifiEnabled()) {
+                hostingActive.set(false)
                 onError(WifiEnvironmentIssue.WIFI_DISABLED, "Wi-Fi turned off during group cleanup")
                 return@removeExistingGroupIfAny
             }
 
             driver.clearLocalServices { _, _ ->
                 if (operationGen.get() != gen) return@clearLocalServices
-                registerLocalServiceWithRetry(gen, txtRecord, attempt = 1, onError = onError) {
-                    createGroupWithRetry(gen, attempt = 1, onReady = onReady, onError = onError)
+                registerLocalServiceWithRetry(gen, baseTxtRecord, attempt = 1, onError = onError) {
+                    createGroupWithRetry(gen, attempt = 1, onError = onError) { formedGoIp ->
+                        publishGroupCredentialsIntoDnsSd(gen, baseTxtRecord, formedGoIp) {
+                            onReady(formedGoIp)
+                        }
+                    }
                 }
+            }
+        }
+    }
+
+    private fun publishGroupCredentialsIntoDnsSd(
+        gen: Int,
+        baseTxt: Map<String, String>,
+        goIp: String,
+        onComplete: () -> Unit
+    ) {
+        if (operationGen.get() != gen) return
+        driver.requestHostedGroupCredentials { creds ->
+            if (operationGen.get() != gen) return@requestHostedGroupCredentials
+            val enriched = LinkedHashMap<String, String>(baseTxt)
+            if (goIp.isNotBlank() && goIp != "0.0.0.0") {
+                enriched["goip"] = goIp
+            }
+            if (creds != null &&
+                isValidDirectGroupSsid(creds.networkName) &&
+                isValidDirectGroupPassphrase(creds.passphrase)
+            ) {
+                enriched["gn"] = creds.networkName
+                enriched["gp"] = creds.passphrase
+                PttDiagnostics.info("HostStart", "Publishing P2P group credentials in DNS-SD forSSID=${creds.networkName} goIp=$goIp")
+                driver.clearLocalServices { _, _ ->
+                    if (operationGen.get() != gen) return@clearLocalServices
+                    driver.addDnsSdLocalService(
+                        PttProtocol.DNS_SERVICE_INSTANCE,
+                        PttProtocol.DNS_SERVICE_TYPE,
+                        enriched
+                    ) { ok, reason ->
+                        if (!ok) {
+                            PttDiagnostics.warn("HostStart", "Enriched addLocalService warning: ${PttDiagnostics.p2pReasonName(reason)}")
+                        }
+                        // Put local P2P radio in listen state once so wpa_supplicant answers DNS-SD queries immediately
+                        driver.discoverPeers { _, _ -> }
+                        onComplete()
+                    }
+                }
+            } else {
+                driver.discoverPeers { _, _ -> }
+                onComplete()
             }
         }
     }
@@ -404,6 +506,7 @@ class WifiDirectManager(
                     registerLocalServiceWithRetry(gen, txtRecord, attempt + 1, onError, onRegistered)
                 })
             } else {
+                hostingActive.set(false)
                 val issue = classifyP2pFailure(reason, WifiEnvironmentIssue.HOSTING_GROUP_FAILED)
                 val diag = "addLocalService failed: ${PttDiagnostics.p2pReasonName(reason)}"
                 PttDiagnostics.error("HostStart", diag)
@@ -415,8 +518,8 @@ class WifiDirectManager(
     private fun createGroupWithRetry(
         gen: Int,
         attempt: Int,
-        onReady: (String) -> Unit,
-        onError: (WifiEnvironmentIssue, String) -> Unit
+        onError: (WifiEnvironmentIssue, String) -> Unit,
+        onReady: (String) -> Unit
     ) {
         if (operationGen.get() != gen) return
         driver.createGroup { ok, reason ->
@@ -428,9 +531,10 @@ class WifiDirectManager(
             } else if (reason == REASON_BUSY && attempt < 2) {
                 PttDiagnostics.warn("HostStart", "createGroup BUSY; retrying once in 550ms")
                 scheduler.postDelayed(550L, Runnable {
-                    createGroupWithRetry(gen, attempt + 1, onReady, onError)
+                    createGroupWithRetry(gen, attempt + 1, onError, onReady)
                 })
             } else {
+                hostingActive.set(false)
                 driver.clearLocalServices { _, _ -> }
                 val issue = classifyP2pFailure(reason, WifiEnvironmentIssue.HOSTING_GROUP_FAILED)
                 val diag = "createGroup failed: ${PttDiagnostics.p2pReasonName(reason)}"
@@ -454,9 +558,6 @@ class WifiDirectManager(
                 groupFormPollRunnable?.let { scheduler.remove(it) }
                 groupFormPollRunnable = null
                 PttDiagnostics.info("HostStart", "Host group ready at $ip")
-                // Kick off periodic peer listen beacon after 700ms so OEM P2P radios answer DNS-SD probes
-                scheduler.remove(hostBeaconRunnable)
-                scheduler.postDelayed(700L, hostBeaconRunnable)
                 onReady(ip)
             }
         }
@@ -475,8 +576,10 @@ class WifiDirectManager(
                 }
                 driver.requestLinkState { st ->
                     if (completed.get() || operationGen.get() != gen) return@requestLinkState
-                    if (st != null && st.groupFormed && !st.groupOwnerIp.isNullOrBlank()) {
-                        finishReady(st.groupOwnerIp)
+                    val goIp = st?.groupOwnerIp?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+                        ?: if (st?.groupFormed == true) resolveLocalP2pInterfaceIp() ?: "192.168.49.1" else null
+                    if (st != null && st.groupFormed && !goIp.isNullOrBlank()) {
+                        finishReady(goIp)
                     } else if (System.currentTimeMillis() - startedMs >= GROUP_FORM_TIMEOUT_MS) {
                         if (completed.compareAndSet(false, true)) {
                             pendingHostReadyCallback = null
@@ -488,7 +591,7 @@ class WifiDirectManager(
                             onError(WifiEnvironmentIssue.HOSTING_GROUP_FAILED, diag)
                         }
                     } else {
-                        scheduler.postDelayed(350L, this)
+                        scheduler.postDelayed(320L, this)
                     }
                 }
             }
@@ -498,8 +601,7 @@ class WifiDirectManager(
     }
 
     /**
-     * Considered fallback when Wi-Fi Direct group creation is blocked by OEM policy:
-     * starts an offline Android Local-Only Hotspot (zero internet routing).
+     * Explicit offline Android Local-Only Hotspot mode (zero internet routing, zero Bluetooth).
      */
     @SuppressLint("MissingPermission")
     override fun startLocalOnlyHotspotFallback(
@@ -554,20 +656,20 @@ class WifiDirectManager(
                 }
             }, Handler(Looper.getMainLooper()))
         } catch (se: SecurityException) {
-            PttDiagnostics.error("Hotspot", "SecurityException starting LocalOnlyHotspot", se)
+            PttDiagnostics.error("Hotspot", "SecurityException starting LocalHotspot", se)
             onError(WifiEnvironmentIssue.MISSING_PERMISSION, se.message ?: "SecurityException")
         } catch (ise: IllegalStateException) {
-            PttDiagnostics.error("Hotspot", "IllegalStateException starting LocalOnlyHotspot", ise)
+            PttDiagnostics.error("Hotspot", "IllegalStateException starting LocalHotspot", ise)
             onError(WifiEnvironmentIssue.HOTSPOT_START_FAILED, ise.message ?: "Hotspot request already active")
         } catch (t: Throwable) {
-            PttDiagnostics.error("Hotspot", "Unexpected error starting LocalOnlyHotspot", t)
+            PttDiagnostics.error("Hotspot", "Unexpected error starting LocalHotspot", t)
             onError(WifiEnvironmentIssue.HOTSPOT_START_FAILED, t.message ?: "Unexpected hotspot error")
         }
     }
 
     /**
      * Resolves IPv4 gateway ONLY when the device is actively associated with a Wi-Fi network.
-     * Never misreports cellular data or disconnected Wi-Fi as a disabled Wi-Fi adapter.
+     * Supports isolated Local-Only Hotspots (which have TRANSPORT_WIFI without NET_CAPABILITY_INTERNET).
      */
     private fun resolveConnectedWifiGatewayIp(): String? {
         try {
@@ -583,6 +685,17 @@ class WifiDirectManager(
                         val gw = route.gateway
                         if (gw is Inet4Address && !gw.isLoopbackAddress && gw.hostAddress != "0.0.0.0") {
                             return gw.hostAddress
+                        }
+                    }
+                    // Fallback: derive .1 gateway from assigned /24 link address on isolated SoftAP
+                    for (la in props.linkAddresses) {
+                        val addr = la.address
+                        val hostAddr = addr.hostAddress
+                        if (addr is Inet4Address && !addr.isLoopbackAddress && !hostAddr.isNullOrBlank()) {
+                            val parts = hostAddr.split('.')
+                            if (parts.size == 4 && parts[3] != "1") {
+                                return "${parts[0]}.${parts[1]}.${parts[2]}.1"
+                            }
                         }
                     }
                 }
@@ -603,14 +716,90 @@ class WifiDirectManager(
         return null
     }
 
+    private fun findMatchingRadioNetwork(remoteIp: String, viaLocalHotspot: Boolean): Network? {
+        val cm = connectivityManager ?: return null
+        val parts = remoteIp.split('.')
+        val subnetPrefix = if (parts.size == 4) "${parts[0]}.${parts[1]}.${parts[2]}." else null
+        try {
+            @Suppress("DEPRECATION")
+            val allNets = cm.allNetworks
+            var anyWifiCandidate: Network? = null
+            for (net in allNets) {
+                val caps = cm.getNetworkCapabilities(net) ?: continue
+                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) &&
+                    !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_WIFI_P2P)
+                ) {
+                    continue
+                }
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                    anyWifiCandidate = net
+                }
+                val props = cm.getLinkProperties(net) ?: continue
+                if (subnetPrefix != null) {
+                    val matchesAddr = props.linkAddresses.any {
+                        val ha = it.address?.hostAddress
+                        !ha.isNullOrBlank() && ha.startsWith(subnetPrefix)
+                    }
+                    val matchesGw = props.routes.any {
+                        val gw = it.gateway?.hostAddress
+                        !gw.isNullOrBlank() && (gw == remoteIp || gw.startsWith(subnetPrefix))
+                    }
+                    if (matchesAddr || matchesGw) return net
+                }
+            }
+            if (viaLocalHotspot && anyWifiCandidate != null) return anyWifiCandidate
+        } catch (t: Throwable) {
+            PttDiagnostics.warn("NetBind", "Lookup matching Network warning", t)
+        }
+        return null
+    }
+
+    override fun bindSocketToRadioNetwork(socket: Socket, remoteIp: String, viaLocalHotspot: Boolean): Boolean {
+        val net = findMatchingRadioNetwork(remoteIp, viaLocalHotspot) ?: return false
+        return try {
+            net.bindSocket(socket)
+            PttDiagnostics.info("NetBind", "Bound TCP socket to explicit Android Network for $remoteIp")
+            true
+        } catch (t: Throwable) {
+            PttDiagnostics.warn("NetBind", "Network.bindSocket(TCP) failed", t)
+            false
+        }
+    }
+
+    override fun bindDatagramToRadioNetwork(socket: DatagramSocket, remoteIp: String, viaLocalHotspot: Boolean): Boolean {
+        val net = findMatchingRadioNetwork(remoteIp, viaLocalHotspot) ?: return false
+        return try {
+            net.bindSocket(socket)
+            PttDiagnostics.info("NetBind", "Bound UDP socket to explicit Android Network for $remoteIp")
+            true
+        } catch (t: Throwable) {
+            PttDiagnostics.warn("NetBind", "Network.bindSocket(UDP) failed", t)
+            false
+        }
+    }
+
+    private fun resolveLocalP2pInterfaceIp(): String? {
+        try {
+            val ifaces = NetworkInterface.getNetworkInterfaces() ?: return null
+            while (ifaces.hasMoreElements()) {
+                val nif = ifaces.nextElement()
+                val name = nif.name?.lowercase().orEmpty()
+                if (!nif.isUp || nif.isLoopback) continue
+                if (!name.contains("p2p") && !name.contains("direct")) continue
+                val addrs = nif.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    val a = addrs.nextElement()
+                    if (a is Inet4Address && !a.isLoopbackAddress) {
+                        return a.hostAddress
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
+        return null
+    }
+
     /**
-     * Sequenced, non-conflicting session discovery:
-     *  • Pre-flight checks (hardware, permissions, Wi-Fi ON, Location toggle on API 30–32)
-     *  • Removes any leftover P2P group from an older session so scanning isn't pinned to a single channel
-     *  • Runs up to [MAX_DISCOVERY_ROUNDS] bounded rounds:
-     *      Phase A (5s): DNS-SD Service Discovery ONLY (clearServiceRequests -> addServiceRequest -> discoverServices)
-     *      Phase B (3s, if DNS-SD hasn't yielded a session yet): Peer Discovery fallback (discoverPeers -> requestPeers)
-     *  • Stops cleanly on timeout and reports empty/failure if no sessions exist.
+     * Sequenced, non-conflicting session discovery.
      */
     override fun startSessionDiscovery(
         onStarted: () -> Unit,
@@ -618,6 +807,8 @@ class WifiDirectManager(
     ): Boolean {
         val gen = operationGen.incrementAndGet()
         cancelScheduledTasks()
+        connectInProgress.set(false)
+        clientLinkEstablished.set(false)
 
         val env = diagnoseEnvironment()
         if (env != WifiEnvironmentIssue.NONE) {
@@ -669,7 +860,6 @@ class WifiDirectManager(
             }
         )
 
-        // Ensure no stale P2P group blocks multi-channel scanning before Round 1
         driver.removeExistingGroupIfAny {
             if (operationGen.get() != gen || !scanning.get()) return@removeExistingGroupIfAny
             runDiscoveryRoundDnsPhase(gen, round = 1, onError = onError)
@@ -690,7 +880,6 @@ class WifiDirectManager(
         }
 
         PttDiagnostics.info("Discovery", "Round $round/$MAX_DISCOVERY_ROUNDS — Phase A (DNS-SD)")
-        // Stop raw peer discovery first so it never cancels P2P_SERV_DISC_REQ on Qualcomm/MTK drivers
         driver.stopPeerDiscovery()
 
         driver.clearServiceRequests { _, _ ->
@@ -709,12 +898,10 @@ class WifiDirectManager(
                         runDiscoveryRoundPeerFallbackPhase(gen, round, dnsFailed = true, onError = onError)
                         return@startDiscoverServicesWithBusyRetry
                     }
-                    // Wait DNS_PHASE_DURATION_MS for DNS-SD responses without interfering calls
                     scheduleDiscoveryStep(DNS_PHASE_DURATION_MS) {
                         if (operationGen.get() != gen || !scanning.get()) return@scheduleDiscoveryStep
                         val hasDnsResult = discoveredByAddress.values.any { !it.discoveredViaFallback }
                         if (hasDnsResult) {
-                            // Session already found via DNS-SD! Keep refreshing gently or conclude after final round
                             advanceOrConcludeDiscovery(gen, round, onError)
                         } else {
                             runDiscoveryRoundPeerFallbackPhase(gen, round, dnsFailed = false, onError = onError)
@@ -764,7 +951,6 @@ class WifiDirectManager(
                         return@discoverPeers
                     }
                 } else {
-                    // Sample peer list midway and at end of fallback window
                     scheduleDiscoveryStep(1_300L) {
                         if (operationGen.get() == gen && scanning.get()) {
                             inspectAvailablePeersForFallback()
@@ -803,18 +989,11 @@ class WifiDirectManager(
         }
     }
 
-    /**
-     * Controlled fallback when OEM firmware suppresses Wi-Fi Direct DNS-SD frames:
-     * surfaces real nearby Wi-Fi Direct Group Owners (or active P2P peers) so the user can initiate
-     * connection; [PttRepository] strictly verifies the RMG-GPS-Pro protocol header & version
-     * and cryptographic channel code before admitting the session.
-     */
     private fun inspectAvailablePeersForFallback() {
         driver.requestPeers { peers ->
             if (!scanning.get()) return@requestPeers
             var changed = false
             val now = System.currentTimeMillis()
-            // Prefer explicit P2P Group Owners first; if none flagged GO, include available/invited peers
             val candidates = peers.filter {
                 it.deviceAddress.isNotBlank() &&
                     (it.isGroupOwner || it.status == WifiP2pDevice.AVAILABLE || it.status == WifiP2pDevice.INVITED || it.status == WifiP2pDevice.CONNECTED)
@@ -822,10 +1001,8 @@ class WifiDirectManager(
             for (peer in candidates) {
                 val existing = discoveredByAddress[peer.deviceAddress]
                 if (existing != null && !existing.discoveredViaFallback) {
-                    // Already discovered with full DNS-SD metadata; never overwrite with fallback
                     continue
                 }
-                // Only add non-GO peers if at least round 1 DNS-SD already ran and no GO peer exists
                 if (!peer.isGroupOwner && candidates.any { it.isGroupOwner }) continue
 
                 val cleanName = peer.deviceName.trim().ifBlank { peer.deviceAddress }
@@ -858,12 +1035,36 @@ class WifiDirectManager(
 
     override fun isScanning(): Boolean = scanning.get()
 
-    /**
-     * Connects to the selected host device over Wi-Fi Direct.
-     * If already associated with that P2P group, immediately delivers the Group Owner IP.
-     */
     override fun connectToHostDevice(
         deviceAddress: String,
+        onInitiated: () -> Unit,
+        onFailed: (WifiEnvironmentIssue, String) -> Unit
+    ) {
+        val cached = discoveredByAddress[deviceAddress] ?: DiscoveredPttSession(
+            deviceAddress = deviceAddress,
+            sessionId = "",
+            hostName = "",
+            deviceName = "",
+            tcpPort = PttProtocol.DEFAULT_TCP_PORT,
+            protocolVersion = PttProtocol.PROTOCOL_VERSION,
+            lastSeenMs = System.currentTimeMillis()
+        )
+        connectToSession(cached, onInitiated, onFailed)
+    }
+
+    /**
+     * Two-stage smart Wi-Fi Direct client connection:
+     *  • Sets [connectInProgress] BEFORE registering BroadcastReceiver so sticky `groupFormed=false`
+     *    intents NEVER abort the connection prematurely!
+     *  • Stage 1 (Fast Direct Group Join, API 30+): If DNS-SD provided `DIRECT-...` SSID & passphrase,
+     *    joins the Autonomous GO group directly via `WifiP2pConfig.Builder` — bypassing WPS PBC,
+     *    MAC randomization mismatches, and hidden OS invitation popups.
+     *  • Stage 2 (Fallback MAC Connect): If Stage 1 is unavailable or does not form a link within 8s,
+     *    refreshes the P2P peer cache briefly and connects via `deviceAddress` + `WpsInfo.PBC`.
+     *  • Reports [WifiEnvironmentIssue.P2P_LINK_FAILED] if neither radio stage forms a P2P group.
+     */
+    override fun connectToSession(
+        session: DiscoveredPttSession,
         onInitiated: () -> Unit,
         onFailed: (WifiEnvironmentIssue, String) -> Unit
     ) {
@@ -876,53 +1077,164 @@ class WifiDirectManager(
             onFailed(WifiEnvironmentIssue.P2P_UNSUPPORTED, "Channel initialization failed")
             return
         }
-        ensureReceiverRegistered()
+
         stopSessionDiscovery()
-
         val gen = operationGen.incrementAndGet()
+        activeTargetIpHint = session.groupOwnerIpHint
+        clientLinkEstablished.set(false)
+        // Must be true BEFORE ensureReceiverRegistered() so sticky broadcast never triggers disconnect!
         connectInProgress.set(true)
+        ensureReceiverRegistered()
 
-        // Check if already connected to an active P2P group first
         driver.requestLinkState { existingLink ->
             if (operationGen.get() != gen) return@requestLinkState
-            if (existingLink != null && existingLink.groupFormed && !existingLink.groupOwnerIp.isNullOrBlank() && !existingLink.isGroupOwner) {
-                PttDiagnostics.info("Connect", "Already attached to P2P group GO=${existingLink.groupOwnerIp}")
-                connectInProgress.set(false)
-                onInitiated()
-                listener?.onP2pLinkEstablished(false, existingLink.groupOwnerIp)
+            if (existingLink != null && existingLink.groupFormed) {
+                val sameTargetGroup = session.groupNetworkName.isBlank() ||
+                    existingLink.networkName.isBlank() ||
+                    existingLink.networkName == session.groupNetworkName
+                val resolvedGoIp = existingLink.groupOwnerIp?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+                    ?: session.groupOwnerIpHint.takeIf { it.isNotBlank() }
+                if (!existingLink.isGroupOwner && sameTargetGroup && !resolvedGoIp.isNullOrBlank()) {
+                    PttDiagnostics.info("Connect", "Reusing active P2P client link GO=$resolvedGoIp")
+                    connectInProgress.set(false)
+                    clientLinkEstablished.set(true)
+                    onInitiated()
+                    listener?.onP2pLinkEstablished(false, resolvedGoIp)
+                    return@requestLinkState
+                }
+                // Stale or mismatched group (e.g. phone was previously Host): clean it before joining!
+                PttDiagnostics.info("Connect", "Removing stale P2P group before joining target host")
+                driver.removeExistingGroupIfAny {
+                    if (operationGen.get() == gen) {
+                        beginClientAssociationStages(gen, session, onInitiated, onFailed)
+                    }
+                }
                 return@requestLinkState
             }
 
-            initiateP2pConnectWithRetry(gen, deviceAddress, attempt = 1, onInitiated = onInitiated, onFailed = onFailed)
+            beginClientAssociationStages(gen, session, onInitiated, onFailed)
         }
     }
 
-    private fun initiateP2pConnectWithRetry(
+    private fun beginClientAssociationStages(
         gen: Int,
-        deviceAddress: String,
-        attempt: Int,
+        session: DiscoveredPttSession,
         onInitiated: () -> Unit,
         onFailed: (WifiEnvironmentIssue, String) -> Unit
     ) {
-        driver.connect(deviceAddress) { ok, reason ->
-            if (operationGen.get() != gen) return@connect
-            if (ok) {
-                PttDiagnostics.info("Connect", "WifiP2pManager.connect initiated to $deviceAddress")
+        val notifiedInitiated = AtomicBoolean(false)
+        val notifyOnce = {
+            if (notifiedInitiated.compareAndSet(false, true)) {
                 onInitiated()
+            }
+        }
+
+        val hasDirectCreds = isValidDirectGroupSsid(session.groupNetworkName) &&
+            isValidDirectGroupPassphrase(session.groupPassphrase)
+
+        if (hasDirectCreds) {
+            PttDiagnostics.info(
+                "Connect",
+                "Stage 1: Direct group join via SSID=${session.groupNetworkName} (target=${session.deviceAddress})"
+            )
+            driver.connectWithGroupCredentials(session.groupNetworkName, session.groupPassphrase) { ok, reason ->
+                if (operationGen.get() != gen || !connectInProgress.get()) return@connectWithGroupCredentials
+                if (ok) {
+                    notifyOnce()
+                    startConnectLinkPolling(gen)
+                    armConnectStageTimeout(DIRECT_CRED_LINK_TIMEOUT_MS) {
+                        if (operationGen.get() == gen && connectInProgress.get()) {
+                            PttDiagnostics.warn("Connect", "Stage 1 Direct SSID join timed out; falling back to Stage 2 MAC connect")
+                            try { driver.cancelConnect() } catch (_: Throwable) {}
+                            scheduler.postDelayed(250L, Runnable {
+                                if (operationGen.get() == gen && connectInProgress.get()) {
+                                    runStage2MacConnect(gen, session.deviceAddress, notifyOnce, onFailed)
+                                }
+                            })
+                        }
+                    }
+                } else {
+                    PttDiagnostics.warn(
+                        "Connect",
+                        "Stage 1 Direct SSID connect rejected (${PttDiagnostics.p2pReasonName(reason)}); switching immediately to Stage 2 MAC connect"
+                    )
+                    runStage2MacConnect(gen, session.deviceAddress, notifyOnce, onFailed)
+                }
+            }
+        } else {
+            runStage2MacConnect(gen, session.deviceAddress, notifyOnce, onFailed)
+        }
+    }
+
+    private fun runStage2MacConnect(
+        gen: Int,
+        deviceAddress: String,
+        notifyInitiatedOnce: () -> Unit,
+        onFailed: (WifiEnvironmentIssue, String) -> Unit
+    ) {
+        if (operationGen.get() != gen || !connectInProgress.get()) return
+        if (deviceAddress.isBlank()) {
+            connectInProgress.set(false)
+            onFailed(WifiEnvironmentIssue.P2P_LINK_FAILED, "Target P2P device address is blank")
+            return
+        }
+        PttDiagnostics.info("Connect", "Stage 2: P2P MAC connect to $deviceAddress")
+        initiateMacConnectWithPeerRefreshRetry(gen, deviceAddress, attempt = 1, notifyInitiatedOnce = notifyInitiatedOnce, onFailed = onFailed)
+    }
+
+    private fun initiateMacConnectWithPeerRefreshRetry(
+        gen: Int,
+        deviceAddress: String,
+        attempt: Int,
+        notifyInitiatedOnce: () -> Unit,
+        onFailed: (WifiEnvironmentIssue, String) -> Unit
+    ) {
+        driver.connect(deviceAddress) { ok, reason ->
+            if (operationGen.get() != gen || !connectInProgress.get()) return@connect
+            if (ok) {
+                PttDiagnostics.info("Connect", "WifiP2pManager.connect(MAC) accepted for $deviceAddress (attempt=$attempt)")
+                notifyInitiatedOnce()
                 startConnectLinkPolling(gen)
-            } else if (reason == REASON_BUSY && attempt < 2) {
-                PttDiagnostics.warn("Connect", "connect BUSY; retrying in 500ms")
-                scheduler.postDelayed(500L, Runnable {
-                    initiateP2pConnectWithRetry(gen, deviceAddress, attempt + 1, onInitiated, onFailed)
+                armConnectStageTimeout(MAC_FALLBACK_LINK_TIMEOUT_MS) {
+                    if (operationGen.get() == gen && connectInProgress.get()) {
+                        connectInProgress.set(false)
+                        connectPollRunnable?.let { scheduler.remove(it) }
+                        connectPollRunnable = null
+                        try { driver.cancelConnect() } catch (_: Throwable) {}
+                        val issue = if (!driver.isWifiEnabled()) WifiEnvironmentIssue.WIFI_DISABLED else WifiEnvironmentIssue.P2P_LINK_FAILED
+                        val diag = "[P2P-Link] Timed out waiting for groupFormed with $deviceAddress"
+                        PttDiagnostics.error("Connect", diag)
+                        onFailed(issue, diag)
+                    }
+                }
+            } else if (attempt < 2 && (reason == REASON_BUSY || reason == REASON_ERROR)) {
+                // Refresh wpa_supplicant peer table briefly (900ms) then retry MAC connect once
+                PttDiagnostics.warn(
+                    "Connect",
+                    "MAC connect returned ${PttDiagnostics.p2pReasonName(reason)}; refreshing peers for 900ms before retry"
+                )
+                driver.discoverPeers { _, _ -> }
+                scheduler.postDelayed(900L, Runnable {
+                    if (operationGen.get() == gen && connectInProgress.get()) {
+                        driver.stopPeerDiscovery()
+                        initiateMacConnectWithPeerRefreshRetry(gen, deviceAddress, attempt + 1, notifyInitiatedOnce, onFailed)
+                    }
                 })
             } else {
                 connectInProgress.set(false)
-                val issue = classifyP2pFailure(reason, WifiEnvironmentIssue.CONNECT_FAILED)
-                val diag = "WifiP2pManager.connect failed: ${PttDiagnostics.p2pReasonName(reason)}"
+                val issue = classifyP2pFailure(reason, WifiEnvironmentIssue.P2P_LINK_FAILED)
+                val diag = "[P2P-Link] WifiP2pManager.connect failed: ${PttDiagnostics.p2pReasonName(reason)}"
                 PttDiagnostics.error("Connect", diag)
                 onFailed(issue, diag)
             }
         }
+    }
+
+    private fun armConnectStageTimeout(timeoutMs: Long, onTimeout: () -> Unit) {
+        connectStageTimeoutRunnable?.let { scheduler.remove(it) }
+        val r = Runnable { onTimeout() }
+        connectStageTimeoutRunnable = r
+        scheduler.postDelayed(timeoutMs, r)
     }
 
     private fun startConnectLinkPolling(gen: Int) {
@@ -932,20 +1244,23 @@ class WifiDirectManager(
                 if (operationGen.get() != gen || !connectInProgress.get()) return
                 driver.requestLinkState { st ->
                     if (operationGen.get() != gen || !connectInProgress.get()) return@requestLinkState
-                    if (st != null && st.groupFormed && !st.groupOwnerIp.isNullOrBlank()) {
-                        onGroupLinkObserved(st.isGroupOwner, st.groupOwnerIp)
+                    val goIp = st?.groupOwnerIp?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+                        ?: if (st?.groupFormed == true && !st.isGroupOwner) activeTargetIpHint.takeIf { it.isNotBlank() } else null
+                    if (st != null && st.groupFormed && !goIp.isNullOrBlank()) {
+                        onGroupLinkObserved(st.isGroupOwner, goIp)
                     } else {
-                        scheduler.postDelayed(600L, this)
+                        scheduler.postDelayed(400L, this)
                     }
                 }
             }
         }
         connectPollRunnable = poll
-        scheduler.postDelayed(600L, poll)
+        scheduler.postDelayed(350L, poll)
     }
 
     private fun onGroupLinkObserved(isGroupOwner: Boolean, goIp: String) {
-        connectInProgress.set(false)
+        connectStageTimeoutRunnable?.let { scheduler.remove(it) }
+        connectStageTimeoutRunnable = null
         connectPollRunnable?.let { scheduler.remove(it) }
         connectPollRunnable = null
 
@@ -954,7 +1269,12 @@ class WifiDirectManager(
             hostWaiter.invoke(goIp)
             return
         }
-        listener?.onP2pLinkEstablished(isGroupOwner, goIp)
+
+        if (connectInProgress.getAndSet(false) || (!hostingActive.get() && !isGroupOwner && !clientLinkEstablished.get())) {
+            clientLinkEstablished.set(true)
+            PttDiagnostics.info("Connect", "P2P group link established (isGO=$isGroupOwner, goIp=$goIp)")
+            listener?.onP2pLinkEstablished(isGroupOwner, goIp)
+        }
     }
 
     private fun processDiscoveredDnsRecord(record: Map<String, String>, deviceAddress: String, rawDeviceName: String) {
@@ -970,6 +1290,9 @@ class WifiDirectManager(
             effectiveDevName.ifBlank { deviceAddress }
         }
         val port = record["port"]?.toIntOrNull() ?: PttProtocol.DEFAULT_TCP_PORT
+        val goIpHint = record["goip"].orEmpty().trim()
+        val groupSsid = record["gn"].orEmpty().trim()
+        val groupPass = record["gp"].orEmpty().trim()
 
         discoveredByAddress[deviceAddress] = DiscoveredPttSession(
             deviceAddress = deviceAddress,
@@ -979,9 +1302,15 @@ class WifiDirectManager(
             tcpPort = port,
             protocolVersion = ver ?: PttProtocol.PROTOCOL_VERSION,
             lastSeenMs = System.currentTimeMillis(),
-            discoveredViaFallback = false
+            discoveredViaFallback = false,
+            groupOwnerIpHint = goIpHint,
+            groupNetworkName = groupSsid,
+            groupPassphrase = groupPass
         )
-        PttDiagnostics.info("DnsSd", "Discovered verified DNS-SD host '$hostName' ($deviceAddress:$port)")
+        PttDiagnostics.info(
+            "DnsSd",
+            "Discovered verified DNS-SD host '$hostName' ($deviceAddress:$port, directSsid=${groupSsid.isNotBlank()}, goIp=$goIpHint)"
+        )
         publishDiscoveredList()
     }
 
@@ -1000,6 +1329,7 @@ class WifiDirectManager(
         scanning.set(false)
         hostingActive.set(false)
         connectInProgress.set(false)
+        clientLinkEstablished.set(false)
         pendingHostReadyCallback = null
         listener?.onTransportFailure(WifiEnvironmentIssue.WIFI_DISABLED, "Wi-Fi disabled on device")
     }
@@ -1024,7 +1354,8 @@ class WifiDirectManager(
         groupFormPollRunnable = null
         connectPollRunnable?.let { scheduler.remove(it) }
         connectPollRunnable = null
-        scheduler.remove(hostBeaconRunnable)
+        connectStageTimeoutRunnable?.let { scheduler.remove(it) }
+        connectStageTimeoutRunnable = null
     }
 
     /**
@@ -1036,8 +1367,10 @@ class WifiDirectManager(
         operationGen.incrementAndGet()
         cancelScheduledTasks()
         pendingHostReadyCallback = null
+        activeTargetIpHint = ""
         scanning.set(false)
         hostingActive.set(false)
+        clientLinkEstablished.set(false)
         discoveredByAddress.clear()
         cachedTxtByAddress.clear()
         cachedDeviceNameByAddress.clear()
@@ -1191,7 +1524,7 @@ class WifiDirectManager(
                                 override fun onSuccess() {
                                     mainHandler.postDelayed({
                                         if (done.compareAndSet(false, true)) cb()
-                                    }, 200L)
+                                    }, 220L)
                                 }
                                 override fun onFailure(reason: Int) {
                                     if (done.compareAndSet(false, true)) cb()
@@ -1232,17 +1565,48 @@ class WifiDirectManager(
                 mgr.requestConnectionInfo(ch) { info ->
                     if (info == null) {
                         cb(null)
-                    } else {
+                    } else if (!info.groupFormed) {
                         cb(
                             P2pDriver.GroupLinkState(
-                                groupFormed = info.groupFormed,
+                                groupFormed = false,
                                 isGroupOwner = info.isGroupOwner,
                                 groupOwnerIp = info.groupOwnerAddress?.hostAddress
                             )
                         )
+                    } else {
+                        mgr.requestGroupInfo(ch) { grp ->
+                            cb(
+                                P2pDriver.GroupLinkState(
+                                    groupFormed = true,
+                                    isGroupOwner = info.isGroupOwner,
+                                    groupOwnerIp = info.groupOwnerAddress?.hostAddress,
+                                    networkName = grp?.networkName.orEmpty()
+                                )
+                            )
+                        }
                     }
                 }
             } catch (_: Throwable) {
+                cb(null)
+            }
+        }
+
+        override fun requestHostedGroupCredentials(cb: (P2pDriver.HostedGroupCredentials?) -> Unit) {
+            val mgr = p2pManager
+            val ch = p2pChannel
+            if (mgr == null || ch == null) { cb(null); return }
+            try {
+                mgr.requestGroupInfo(ch) { grp ->
+                    val ssid = grp?.networkName.orEmpty()
+                    val pass = grp?.passphrase.orEmpty()
+                    if (ssid.isNotBlank() && pass.isNotBlank()) {
+                        cb(P2pDriver.HostedGroupCredentials(ssid, pass))
+                    } else {
+                        cb(null)
+                    }
+                }
+            } catch (t: Throwable) {
+                PttDiagnostics.warn("P2pDriver", "requestGroupInfo warning", t)
                 cb(null)
             }
         }
@@ -1364,6 +1728,29 @@ class WifiDirectManager(
                 }
             } catch (_: Throwable) {
                 cb(emptyList())
+            }
+        }
+
+        override fun connectWithGroupCredentials(
+            networkName: String,
+            passphrase: String,
+            cb: (Boolean, Int) -> Unit
+        ) {
+            val mgr = p2pManager
+            val ch = p2pChannel
+            if (mgr == null || ch == null) { cb(false, REASON_P2P_UNSUPPORTED); return }
+            try {
+                val cfg = WifiP2pConfig.Builder()
+                    .setNetworkName(networkName)
+                    .setPassphrase(passphrase)
+                    .build()
+                mgr.connect(ch, cfg, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() = cb(true, 0)
+                    override fun onFailure(reason: Int) = cb(false, reason)
+                })
+            } catch (t: Throwable) {
+                PttDiagnostics.warn("P2pDriver", "connectWithGroupCredentials exception", t)
+                cb(false, REASON_ERROR)
             }
         }
 

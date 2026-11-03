@@ -68,11 +68,14 @@ class PttPage(
     private val connectingStatusText: TextView
 
     // Active Walkie-Talkie stage (when IN_SESSION)
+    private val hotspotLobbyCard: LinearLayout
     private val sessionScroll: ScrollView
     private val channelPillText: TextView
     private val codecPillText: TextView
     private val sessionSubStatusText: TextView
-    private val hotspotInfoBanner: TextView
+    private val hotspotInfoCard: LinearLayout
+    private val hotspotSsidText: TextView
+    private val hotspotPassText: TextView
     private val audioMutedBanner: TextView
     private val approvalsContainer: LinearLayout
     private val pttCircleButton: PttTalkCircleView
@@ -278,17 +281,18 @@ class PttPage(
 
         discoveredListContainer = act.vbox()
         scanSection.addView(discoveredListContainer, lp())
+        lobbyCol.addView(scanSection, lp().margins(b = act.dp(12)))
 
-        // Optional Local Hotspot Gateway Join helper inside scan card (clearly separated from Wi-Fi Direct)
-        val hotspotJoinBox = act.hbox().apply {
+        // 3e. Always-visible Local-Only Hotspot Join Card in Lobby (clear offline alternative without Bluetooth/internet)
+        hotspotLobbyCard = act.hbox().apply {
             gravity = Gravity.CENTER_VERTICAL
-            background = roundRect(C.CARD_SOFT, act.dp(14).toFloat(), C.BORDER, act.dp(1))
-            setPadding(act.dp(12), act.dp(10), act.dp(12), act.dp(10))
+            background = roundRect(C.CARD_SOFT, act.dp(16).toFloat(), C.BORDER, act.dp(1))
+            setPadding(act.dp(13), act.dp(11), act.dp(13), act.dp(11))
         }
         val hsTextCol = act.vbox()
-        hsTextCol.addView(act.text(act.getString(R.string.ptt_join_hotspot_ip_label), 13f, C.TEXT, Fonts.medium))
+        hsTextCol.addView(act.text(act.getString(R.string.ptt_join_hotspot_ip_label), 13.5f, C.TEXT, Fonts.bold))
         hsTextCol.addView(act.text(act.getString(R.string.ptt_join_hotspot_ip_desc), 11.5f, C.TEXT2), lp().margins(t = act.dp(2)))
-        hotspotJoinBox.addView(hsTextCol, lp(0, weight = 1f).margins(e = act.dp(8)))
+        hotspotLobbyCard.addView(hsTextCol, lp(0, weight = 1f).margins(e = act.dp(8)))
         val hsJoinBtn = uniformActionButton(
             label = act.getString(R.string.ptt_join_hotspot_btn),
             filled = false,
@@ -300,10 +304,8 @@ class PttPage(
                 ensureWalkiePermissionsThen { showJoinLocalHotspotDialog() }
             }
         }
-        hotspotJoinBox.addView(hsJoinBtn, LinearLayout.LayoutParams(act.dp(124), act.dp(40)))
-        scanSection.addView(hotspotJoinBox, lp().margins(t = act.dp(10)))
-
-        lobbyCol.addView(scanSection, lp())
+        hotspotLobbyCard.addView(hsJoinBtn, LinearLayout.LayoutParams(act.dp(124), act.dp(40)))
+        lobbyCol.addView(hotspotLobbyCard, lp())
 
         lobbyScroll = ScrollView(act).apply {
             isFillViewport = true
@@ -337,13 +339,25 @@ class PttPage(
         }
         sessionCol.addView(sessionSubStatusText, lp().margins(b = act.dp(6)))
 
-        hotspotInfoBanner = act.text("", 12.5f, C.GOLD_DEEP, Fonts.medium).apply {
-            gravity = Gravity.CENTER
-            background = roundRect(C.GOLD_PALE, act.dp(14).toFloat(), C.GOLD_LIGHT, act.dp(1))
-            setPadding(act.dp(12), act.dp(8), act.dp(12), act.dp(8))
+        hotspotInfoCard = act.vbox().apply {
+            background = roundRect(C.GOLD_PALE, act.dp(16).toFloat(), C.GOLD_LIGHT, act.dp(1))
+            setPadding(act.dp(14), act.dp(11), act.dp(14), act.dp(11))
             visibility = View.GONE
         }
-        sessionCol.addView(hotspotInfoBanner, lp().margins(b = act.dp(8)))
+        hotspotInfoCard.addView(act.text(act.getString(R.string.ptt_hotspot_card_title), 13f, C.GOLD_DEEP, Fonts.bold))
+        hotspotSsidText = act.text("", 13.5f, C.TEXT, Fonts.bold).apply {
+            textDirection = View.TEXT_DIRECTION_LOCALE
+        }
+        hotspotPassText = act.text("", 13.5f, C.TEXT, Fonts.bold).apply {
+            textDirection = View.TEXT_DIRECTION_LOCALE
+        }
+        hotspotInfoCard.addView(hotspotSsidText, lp().margins(t = act.dp(5)))
+        hotspotInfoCard.addView(hotspotPassText, lp().margins(t = act.dp(2)))
+        hotspotInfoCard.addView(
+            act.text(act.getString(R.string.ptt_hotspot_how_to_join), 11.5f, C.TEXT2),
+            lp().margins(t = act.dp(6))
+        )
+        sessionCol.addView(hotspotInfoCard, lp().margins(b = act.dp(8)))
 
         audioMutedBanner = act.text(act.getString(R.string.ptt_audio_muted_banner), 12.5f, C.AMBER, Fonts.bold).apply {
             gravity = Gravity.CENTER
@@ -489,7 +503,7 @@ class PttPage(
         } else {
             View.GONE
         }
-        bindErrorBanner(state.errorCode)
+        bindErrorBanner(state.errorCode, state.diagnosticMessage)
 
         // 2. Stage switching
         val inSession = state.phase == PttPhase.IN_SESSION
@@ -502,7 +516,10 @@ class PttPage(
                 PttPhase.CHECKING -> act.getString(R.string.ptt_checking_status)
                 PttPhase.HOSTING -> act.getString(R.string.ptt_hosting_starting_status)
                 PttPhase.SCANNING -> act.getString(R.string.ptt_discovery_searching)
-                PttPhase.CONNECTING -> act.getString(R.string.ptt_connecting_status)
+                PttPhase.CONNECTING -> {
+                    if (state.connectingRadioLinked) act.getString(R.string.ptt_connecting_tcp_auth)
+                    else act.getString(R.string.ptt_connecting_p2p_link)
+                }
                 PttPhase.WAITING_APPROVAL -> act.getString(R.string.ptt_waiting_host_approval)
                 else -> act.getString(R.string.ptt_status_disconnected)
             }
@@ -512,20 +529,22 @@ class PttPage(
                 else C.TEXT2
             )
 
-            connectingCard.visibility = if (
-                state.phase == PttPhase.CHECKING ||
+            val busyTransition = state.phase == PttPhase.CHECKING ||
                 state.phase == PttPhase.HOSTING ||
                 state.phase == PttPhase.CONNECTING ||
                 state.phase == PttPhase.WAITING_APPROVAL
-            ) {
-                View.VISIBLE
-            } else {
-                View.GONE
-            }
+
+            connectingCard.visibility = if (busyTransition) View.VISIBLE else View.GONE
+            hotspotLobbyCard.visibility = if (busyTransition) View.GONE else View.VISIBLE
+
             connectingStatusText.text = when (state.phase) {
                 PttPhase.CHECKING -> act.getString(R.string.ptt_checking_status)
                 PttPhase.HOSTING -> act.getString(R.string.ptt_hosting_starting_status)
                 PttPhase.WAITING_APPROVAL -> act.getString(R.string.ptt_waiting_host_approval)
+                PttPhase.CONNECTING -> {
+                    if (state.connectingRadioLinked) act.getString(R.string.ptt_connecting_tcp_auth)
+                    else act.getString(R.string.ptt_connecting_p2p_link)
+                }
                 else -> act.getString(R.string.ptt_connecting_status)
             }
 
@@ -580,14 +599,11 @@ class PttPage(
         }
 
         if (state.hotspotInfo != null) {
-            hotspotInfoBanner.text = act.getString(
-                R.string.ptt_hotspot_active_fmt,
-                state.hotspotInfo.ssid,
-                state.hotspotInfo.passphrase
-            )
-            hotspotInfoBanner.visibility = View.VISIBLE
+            hotspotSsidText.text = act.getString(R.string.ptt_hotspot_ssid_fmt, state.hotspotInfo.ssid)
+            hotspotPassText.text = act.getString(R.string.ptt_hotspot_pass_fmt, state.hotspotInfo.passphrase)
+            hotspotInfoCard.visibility = View.VISIBLE
         } else {
-            hotspotInfoBanner.visibility = View.GONE
+            hotspotInfoCard.visibility = View.GONE
         }
 
         audioMutedBanner.visibility = if (state.localAudioMuted) View.VISIBLE else View.GONE
@@ -633,7 +649,7 @@ class PttPage(
         renderParticipantsList(state.participants)
     }
 
-    private fun bindErrorBanner(errorCode: PttErrorCode) {
+    private fun bindErrorBanner(errorCode: PttErrorCode, diagnosticMessage: String) {
         if (errorCode == PttErrorCode.NONE) {
             errorBannerBox.visibility = View.GONE
             return
@@ -642,7 +658,7 @@ class PttPage(
         errorActionsRow.removeAllViews()
         errorActionsRow.visibility = View.GONE
 
-        errorBannerText.text = when (errorCode) {
+        val primaryText = when (errorCode) {
             PttErrorCode.WIFI_DISABLED -> act.getString(R.string.ptt_err_wifi_disabled)
             PttErrorCode.LOCATION_SERVICE_OFF -> act.getString(R.string.ptt_err_location_service_off)
             PttErrorCode.PERMISSION_MISSING -> act.getString(R.string.ptt_perm_denied_msg)
@@ -651,12 +667,24 @@ class PttPage(
             PttErrorCode.DISCOVERY_FAILED -> act.getString(R.string.ptt_err_discovery_failed)
             PttErrorCode.HOTSPOT_START_FAILED -> act.getString(R.string.ptt_err_hotspot_start_failed)
             PttErrorCode.HOTSPOT_NOT_CONNECTED -> act.getString(R.string.ptt_err_hotspot_not_connected)
+            PttErrorCode.P2P_LINK_FAILED -> act.getString(R.string.ptt_err_p2p_link_failed)
             PttErrorCode.PROTOCOL_INCOMPATIBLE -> act.getString(R.string.ptt_err_protocol_incompatible)
             PttErrorCode.AUTH_FAILED -> act.getString(R.string.ptt_err_auth_failed)
             PttErrorCode.REJECTED_BY_HOST -> act.getString(R.string.ptt_err_rejected_by_host)
+            PttErrorCode.APPROVAL_TIMEOUT -> act.getString(R.string.ptt_err_approval_timeout)
             PttErrorCode.CONNECT_TIMEOUT -> act.getString(R.string.ptt_err_connect_timeout)
             PttErrorCode.CONNECTION_REFUSED -> act.getString(R.string.ptt_err_connection_refused)
             PttErrorCode.NONE -> ""
+        }
+        errorBannerText.text = if (
+            diagnosticMessage.isNotBlank() &&
+            (errorCode == PttErrorCode.P2P_LINK_FAILED ||
+                errorCode == PttErrorCode.CONNECT_TIMEOUT ||
+                errorCode == PttErrorCode.CONNECTION_REFUSED)
+        ) {
+            "$primaryText\n${act.getString(R.string.ptt_diag_label_fmt, diagnosticMessage.take(96))}"
+        } else {
+            primaryText
         }
 
         when (errorCode) {
@@ -673,7 +701,7 @@ class PttPage(
                 errorActionsRow.addView(wifiBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, act.dp(40)))
             }
 
-            PttErrorCode.P2P_UNSUPPORTED, PttErrorCode.HOSTING_FAILED -> {
+            PttErrorCode.P2P_UNSUPPORTED, PttErrorCode.HOSTING_FAILED, PttErrorCode.P2P_LINK_FAILED -> {
                 errorActionsRow.visibility = View.VISIBLE
                 val wifiBtn = uniformActionButton(
                     label = act.getString(R.string.ptt_open_wifi_settings),
@@ -897,6 +925,32 @@ class PttPage(
 
     private fun showCreateSessionDialog(useHotspotFallback: Boolean) {
         val box = act.vbox()
+        var selectedHotspotMode = useHotspotFallback
+
+        box.addView(
+            act.text(act.getString(R.string.ptt_host_mode_label), 12.5f, C.GOLD_DEEP, Fonts.bold),
+            lp().margins(b = act.dp(6))
+        )
+        val hotspotModeHint = act.text(act.getString(R.string.ptt_host_mode_hotspot_hint), 11.5f, C.TEXT2).apply {
+            background = roundRect(C.GOLD_PALE, act.dp(12).toFloat(), C.GOLD_LIGHT, act.dp(1))
+            setPadding(act.dp(11), act.dp(8), act.dp(11), act.dp(8))
+            visibility = if (selectedHotspotMode) View.VISIBLE else View.GONE
+        }
+        box.addView(
+            buildSegmentedControl(
+                options = listOf(
+                    act.getString(R.string.ptt_host_mode_wifi_direct),
+                    act.getString(R.string.ptt_host_mode_local_hotspot)
+                ),
+                selectedIndex = if (selectedHotspotMode) 1 else 0
+            ) { idx ->
+                selectedHotspotMode = (idx == 1)
+                hotspotModeHint.visibility = if (selectedHotspotMode) View.VISIBLE else View.GONE
+            },
+            lp().margins(b = act.dp(8))
+        )
+        box.addView(hotspotModeHint, lp().margins(b = act.dp(10)))
+
         box.addView(act.text(act.getString(R.string.ptt_channel_code_label), 12.5f, C.TEXT2, Fonts.medium), lp().margins(b = act.dp(6)))
 
         val codeInput = act.input(act.getString(R.string.ptt_channel_code_hint)).apply {
@@ -936,7 +990,7 @@ class PttPage(
                     return@button
                 }
                 dlg.dismiss()
-                repo.createHostSession(raw, useLocalHotspotFallback = useHotspotFallback)
+                repo.createHostSession(raw, useLocalHotspotFallback = selectedHotspotMode)
             }
             .show()
     }

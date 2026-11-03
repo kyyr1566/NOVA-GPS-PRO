@@ -59,9 +59,11 @@ enum class PttErrorCode {
     DISCOVERY_FAILED,
     HOTSPOT_START_FAILED,
     HOTSPOT_NOT_CONNECTED,
+    P2P_LINK_FAILED,
     PROTOCOL_INCOMPATIBLE,
     AUTH_FAILED,
     REJECTED_BY_HOST,
+    APPROVAL_TIMEOUT,
     CONNECT_TIMEOUT,
     CONNECTION_REFUSED
 }
@@ -81,6 +83,7 @@ data class LocalHotspotCredentials(
 data class PttUiState(
     val phase: PttPhase = PttPhase.DISCONNECTED,
     val discoveryState: PttDiscoveryState = PttDiscoveryState.IDLE,
+    val connectingRadioLinked: Boolean = false,
     val isHost: Boolean = false,
     val displayName: String = "",
     val channelCode: String = "",
@@ -182,8 +185,9 @@ class PttRepository(
     companion object {
         private const val HEARTBEAT_INTERVAL_MS = 2_500L
         private const val HOSTING_SETUP_TIMEOUT_MS = 14_000L
-        private const val CONNECTING_TIMEOUT_MS = 30_000L
-        private const val APPROVAL_TIMEOUT_MS = 35_000L
+        private const val P2P_RADIO_LINK_TIMEOUT_MS = 22_000L
+        private const val TCP_HANDSHAKE_TIMEOUT_MS = 18_000L
+        private const val APPROVAL_TIMEOUT_MS = 38_000L
     }
 
     private class DefaultPttServiceBridge(private val ctx: Context) : PttServiceBridge {
@@ -367,6 +371,8 @@ class PttRepository(
                 if (cur.phase == PttPhase.CONNECTING && !cur.isHost) {
                     val port = pendingTargetSession?.tcpPort ?: PttProtocol.DEFAULT_TCP_PORT
                     PttDiagnostics.info("ClientJoin", "P2P link ready -> dialing TCP control $groupOwnerIp:$port")
+                    updateState { it.copy(connectingRadioLinked = true) }
+                    armConnectTimeout(TCP_HANDSHAKE_TIMEOUT_MS, timeoutError = PttErrorCode.CONNECT_TIMEOUT)
                     dialHostControlChannel(groupOwnerIp, port)
                 }
             }
@@ -374,12 +380,18 @@ class PttRepository(
             override fun onP2pLinkDisconnected() {
                 val cur = _state.value
                 if (!cur.isHost && cur.isActiveSessionOrConnecting) {
-                    PttDiagnostics.warn("ClientJoin", "P2P link disconnected; tearing down client session")
+                    PttDiagnostics.warn("ClientJoin", "Established P2P link disconnected; tearing down client session")
                     val wasEstablished = cur.phase == PttPhase.IN_SESSION
+                    val err = when {
+                        wasEstablished -> PttErrorCode.NONE
+                        cur.connectingRadioLinked -> PttErrorCode.CONNECT_TIMEOUT
+                        else -> PttErrorCode.P2P_LINK_FAILED
+                    }
                     teardownSession(
                         showEndedBanner = wasEstablished,
                         sendGoodbye = false,
-                        postError = if (wasEstablished) PttErrorCode.NONE else PttErrorCode.CONNECT_TIMEOUT
+                        postError = err,
+                        diagnostic = "[P2P-Link] Radio link disconnected"
                     )
                 }
             }
@@ -866,6 +878,7 @@ class PttRepository(
         updateState {
             it.copy(
                 phase = PttPhase.CONNECTING,
+                connectingRadioLinked = false,
                 isHost = false,
                 channelCode = code,
                 showSessionEndedBanner = false,
@@ -873,13 +886,13 @@ class PttRepository(
                 diagnosticMessage = ""
             )
         }
-        armConnectTimeout(CONNECTING_TIMEOUT_MS, timeoutError = PttErrorCode.CONNECT_TIMEOUT)
+        armConnectTimeout(P2P_RADIO_LINK_TIMEOUT_MS, timeoutError = PttErrorCode.P2P_LINK_FAILED)
 
-        wifiDirect.connectToHostDevice(
-            deviceAddress = session.deviceAddress,
+        wifiDirect.connectToSession(
+            session = session,
             onInitiated = { /* P2P connection broadcast / link poll will invoke dialHostControlChannel */ },
             onFailed = { issue, diag ->
-                val mapped = if (issue == WifiEnvironmentIssue.CONNECT_FAILED) PttErrorCode.CONNECT_TIMEOUT else mapWifiIssue(issue)
+                val mapped = mapWifiIssue(issue)
                 teardownSession(showEndedBanner = false, sendGoodbye = false, postError = mapped, diagnostic = diag)
             }
         )
@@ -941,6 +954,7 @@ class PttRepository(
         updateState {
             it.copy(
                 phase = PttPhase.CONNECTING,
+                connectingRadioLinked = true,
                 isHost = false,
                 channelCode = code,
                 showSessionEndedBanner = false,
@@ -948,7 +962,7 @@ class PttRepository(
                 diagnosticMessage = ""
             )
         }
-        armConnectTimeout(CONNECTING_TIMEOUT_MS, timeoutError = PttErrorCode.CONNECT_TIMEOUT)
+        armConnectTimeout(TCP_HANDSHAKE_TIMEOUT_MS, timeoutError = PttErrorCode.CONNECT_TIMEOUT)
         dialHostControlChannel(gwIp, explicitPort)
         return true
     }
@@ -1490,26 +1504,61 @@ class PttRepository(
         ioExecutor.execute {
             var sock: Socket? = null
             try {
+                val ipCandidates = LinkedHashSet<String>().apply {
+                    if (hostIp.isNotBlank() && hostIp != "0.0.0.0") add(hostIp)
+                    val hint = pendingTargetSession?.groupOwnerIpHint.orEmpty()
+                    if (hint.isNotBlank() && hint != "0.0.0.0") add(hint)
+                    if (!pendingJoinViaHotspot && hostIp != "127.0.0.1" && hostIp != "localhost") {
+                        add("192.168.49.1")
+                    }
+                }.toList()
+
+                // Wait briefly (up to 3.0s) for DHCP on p2p-wlan0-* / wlan0 to assign a local subnet IPv4 address
+                if (ipCandidates.none { it == "127.0.0.1" || it == "localhost" }) {
+                    var waitedMs = 0L
+                    while (waitedMs < 3_000L && _state.value.phase == PttPhase.CONNECTING) {
+                        if (ipCandidates.any { findLocalInterfaceAddressForTarget(it) != null }) break
+                        Thread.sleep(200L)
+                        waitedMs += 200L
+                    }
+                }
+
                 var connected: Socket? = null
+                var connectedTargetIp: String = hostIp
                 var lastConnectErr: Throwable? = null
-                for (attempt in 1..6) {
+
+                outer@ for (attempt in 1..7) {
                     if (_state.value.phase != PttPhase.CONNECTING) return@execute
                     if (!wifiDirect.isWifiEnabled()) {
                         teardownSession(showEndedBanner = false, sendGoodbye = false, postError = PttErrorCode.WIFI_DISABLED)
                         return@execute
                     }
-                    try {
-                        val candidate = Socket()
-                        candidate.tcpNoDelay = true
-                        bindSocketToMatchingP2pSubnetIfPresent(candidate, hostIp)
-                        candidate.connect(InetSocketAddress(hostIp, tcpPort), 2_800)
-                        connected = candidate
-                        break
-                    } catch (t: Throwable) {
-                        lastConnectErr = t
-                        Thread.sleep(600L)
+                    for (candidateIp in ipCandidates) {
+                        if (_state.value.phase != PttPhase.CONNECTING) return@execute
+                        try {
+                            val candidate = Socket()
+                            candidate.tcpNoDelay = true
+                            val boundViaNet = wifiDirect.bindSocketToRadioNetwork(
+                                socket = candidate,
+                                remoteIp = candidateIp,
+                                viaLocalHotspot = pendingJoinViaHotspot
+                            )
+                            if (!boundViaNet) {
+                                bindSocketToMatchingP2pSubnetIfPresent(candidate, candidateIp)
+                            }
+                            PttDiagnostics.info("ClientDial", "Attempt $attempt -> TCP $candidateIp:$tcpPort (netBound=$boundViaNet)")
+                            candidate.connect(InetSocketAddress(candidateIp, tcpPort), 2_100)
+                            connected = candidate
+                            connectedTargetIp = candidateIp
+                            break@outer
+                        } catch (t: Throwable) {
+                            lastConnectErr = t
+                            PttDiagnostics.warn("ClientDial", "Attempt $attempt to $candidateIp:$tcpPort failed: ${t.javaClass.simpleName}: ${t.message}")
+                        }
                     }
+                    Thread.sleep(450L)
                 }
+
                 sock = connected ?: run {
                     val errCode = when {
                         !wifiDirect.isWifiEnabled() -> PttErrorCode.WIFI_DISABLED
@@ -1518,30 +1567,43 @@ class PttRepository(
                         lastConnectErr is ConnectException -> PttErrorCode.CONNECTION_REFUSED
                         else -> PttErrorCode.CONNECT_TIMEOUT
                     }
-                    PttDiagnostics.error("ClientDial", "Failed dialing $hostIp:$tcpPort", lastConnectErr)
+                    val diag = "[TCP-Dial $hostIp:$tcpPort] ${lastConnectErr?.javaClass?.simpleName ?: "Timeout"}: ${lastConnectErr?.message.orEmpty()}"
+                    PttDiagnostics.error("ClientDial", diag, lastConnectErr)
                     teardownSession(
                         showEndedBanner = false,
                         sendGoodbye = false,
                         postError = errCode,
-                        diagnostic = lastConnectErr?.message.orEmpty()
+                        diagnostic = diag
                     )
                     return@execute
                 }
                 sock.soTimeout = 10_000
+                PttDiagnostics.info("ClientDial", "TCP connected to $connectedTargetIp:$tcpPort; awaiting HelloChallenge")
 
-                val udp = DatagramSocket(0)
+                val localUdpBindAddr = findLocalInterfaceAddressForTarget(connectedTargetIp)
+                val udp = if (localUdpBindAddr != null && connectedTargetIp != "127.0.0.1" && connectedTargetIp != "localhost") {
+                    try {
+                        DatagramSocket(InetSocketAddress(localUdpBindAddr, 0))
+                    } catch (_: Throwable) {
+                        DatagramSocket(0)
+                    }
+                } else {
+                    DatagramSocket(0)
+                }
+                wifiDirect.bindDatagramToRadioNetwork(udp, connectedTargetIp, pendingJoinViaHotspot)
                 udpSocket = udp
                 udpRunning.set(true)
 
                 val challenge = try {
                     PttProtocol.readControlFrame(sock.getInputStream(), macKey = null, requireMac = false)
                 } catch (ioe: IOException) {
-                    PttDiagnostics.error("ClientDial", "Invalid protocol header from $hostIp:$tcpPort", ioe)
+                    val diag = "[TCP-Challenge] Invalid protocol header from $connectedTargetIp:$tcpPort: ${ioe.message}"
+                    PttDiagnostics.error("ClientDial", diag, ioe)
                     teardownSession(
                         showEndedBanner = false,
                         sendGoodbye = false,
                         postError = PttErrorCode.PROTOCOL_INCOMPATIBLE,
-                        diagnostic = ioe.message.orEmpty()
+                        diagnostic = diag
                     )
                     return@execute
                 }
@@ -1551,7 +1613,7 @@ class PttRepository(
                         showEndedBanner = false,
                         sendGoodbye = false,
                         postError = PttErrorCode.PROTOCOL_INCOMPATIBLE,
-                        diagnostic = "Protocol version mismatch"
+                        diagnostic = "[Protocol] Version mismatch"
                     )
                     return@execute
                 }
@@ -1580,13 +1642,25 @@ class PttRepository(
                     clientProofHex = proof
                 )
                 PttProtocol.writeControlFrame(sock.getOutputStream(), joinReq, macKey = null)
+                PttDiagnostics.info("ClientDial", "JoinRequest sent; awaiting channel auth & host approval")
 
                 var nextFrame = PttProtocol.readControlFrame(sock.getInputStream(), macKey = derivedSessionKey, requireMac = false)
                 if (nextFrame is PttProtocol.ControlFrame.JoinPendingApproval) {
+                    PttDiagnostics.info("ClientDial", "Channel code verified! Waiting for manual Host approval")
                     updateState { it.copy(phase = PttPhase.WAITING_APPROVAL) }
-                    armConnectTimeout(APPROVAL_TIMEOUT_MS, timeoutError = PttErrorCode.CONNECT_TIMEOUT)
+                    armConnectTimeout(APPROVAL_TIMEOUT_MS, timeoutError = PttErrorCode.APPROVAL_TIMEOUT)
                     sock.soTimeout = APPROVAL_TIMEOUT_MS.toInt()
-                    nextFrame = PttProtocol.readControlFrame(sock.getInputStream(), macKey = derivedSessionKey, requireMac = false)
+                    nextFrame = try {
+                        PttProtocol.readControlFrame(sock.getInputStream(), macKey = derivedSessionKey, requireMac = false)
+                    } catch (ste: java.net.SocketTimeoutException) {
+                        teardownSession(
+                            showEndedBanner = false,
+                            sendGoodbye = false,
+                            postError = PttErrorCode.APPROVAL_TIMEOUT,
+                            diagnostic = "[Approval] Host did not respond within timeout"
+                        )
+                        return@execute
+                    }
                 }
 
                 when (nextFrame) {
@@ -1596,6 +1670,7 @@ class PttRepository(
                             PttRejectReason.PROTOCOL_MISMATCH -> PttErrorCode.PROTOCOL_INCOMPATIBLE
                             else -> PttErrorCode.REJECTED_BY_HOST
                         }
+                        PttDiagnostics.warn("ClientDial", "JoinRejected by host: reason=${nextFrame.reasonCode} -> $err")
                         teardownSession(showEndedBanner = false, sendGoodbye = false, postError = err)
                         return@execute
                     }
@@ -1624,7 +1699,7 @@ class PttRepository(
                         )
                         sm.applyAuthoritativeRoster(nextFrame.roster, clockMs())
 
-                        val hostAddr = InetAddress.getByName(hostIp)
+                        val hostAddr = InetAddress.getByName(connectedTargetIp)
                         val ctrlConn = ClientControlConn(
                             participantId = nextFrame.participantId,
                             participantToken = nextFrame.participantToken,
@@ -1652,6 +1727,7 @@ class PttRepository(
                         updateState {
                             it.copy(
                                 phase = PttPhase.IN_SESSION,
+                                connectingRadioLinked = true,
                                 isHost = false,
                                 negotiatedCodec = codec,
                                 buttonState = sm.currentVisualState(),
@@ -1662,6 +1738,7 @@ class PttRepository(
                                 diagnosticMessage = ""
                             )
                         }
+                        PttDiagnostics.info("ClientDial", "Client entered IN_SESSION successfully (connectedCount=${sm.connectedCount()})")
                         startOrRefreshForegroundServiceSafely()
                         runClientControlReadLoop(ctrlConn)
                     }
@@ -1674,25 +1751,25 @@ class PttRepository(
                 PttDiagnostics.warn("ClientDial", "Exception during join handshake", t)
                 if (!tearingDown.get() && _state.value.isActiveSessionOrConnecting) {
                     try { sock?.close() } catch (_: Throwable) {}
-                    val err = if (!wifiDirect.isWifiEnabled()) PttErrorCode.WIFI_DISABLED else PttErrorCode.CONNECT_TIMEOUT
+                    val curPhase = _state.value.phase
+                    val err = when {
+                        !wifiDirect.isWifiEnabled() -> PttErrorCode.WIFI_DISABLED
+                        curPhase == PttPhase.WAITING_APPROVAL -> PttErrorCode.APPROVAL_TIMEOUT
+                        else -> PttErrorCode.CONNECT_TIMEOUT
+                    }
                     teardownSession(showEndedBanner = false, sendGoodbye = false, postError = err, diagnostic = t.message.orEmpty())
                 }
             }
         }
     }
 
-    /**
-     * When mobile cellular data is active without internet, Android's default routing table on some
-     * OEM devices misroutes 192.168.49.1 packets away from `p2p-wlan0-*`. Binding the client socket
-     * to the local IPv4 address sharing the target's /24 subnet guarantees direct P2P routing.
-     */
-    private fun bindSocketToMatchingP2pSubnetIfPresent(socket: Socket, remoteIp: String) {
-        if (remoteIp == "127.0.0.1" || remoteIp == "localhost") return
+    private fun findLocalInterfaceAddressForTarget(remoteIp: String): Inet4Address? {
+        if (remoteIp == "127.0.0.1" || remoteIp == "localhost") return null
         val parts = remoteIp.split('.')
-        if (parts.size != 4) return
+        if (parts.size != 4) return null
         val prefix = "${parts[0]}.${parts[1]}.${parts[2]}."
         try {
-            val ifaces = NetworkInterface.getNetworkInterfaces() ?: return
+            val ifaces = NetworkInterface.getNetworkInterfaces() ?: return null
             while (ifaces.hasMoreElements()) {
                 val nif = ifaces.nextElement()
                 if (!nif.isUp || nif.isLoopback) continue
@@ -1701,11 +1778,23 @@ class PttRepository(
                     val addr = addrs.nextElement()
                     val hostAddr = addr.hostAddress
                     if (addr is Inet4Address && !hostAddr.isNullOrBlank() && hostAddr.startsWith(prefix)) {
-                        socket.bind(InetSocketAddress(addr, 0))
-                        return
+                        return addr
                     }
                 }
             }
+        } catch (_: Throwable) {}
+        return null
+    }
+
+    /**
+     * When mobile cellular data is active without internet, Android's default routing table on some
+     * OEM devices misroutes 192.168.49.1 packets away from `p2p-wlan0-*`. Binding the client socket
+     * to the local IPv4 address sharing the target's /24 subnet guarantees direct P2P routing.
+     */
+    private fun bindSocketToMatchingP2pSubnetIfPresent(socket: Socket, remoteIp: String) {
+        val localAddr = findLocalInterfaceAddressForTarget(remoteIp) ?: return
+        try {
+            socket.bind(InetSocketAddress(localAddr, 0))
         } catch (_: Throwable) {
             // Safe best-effort bind; default OS routing proceeds if unavailable
         }
@@ -2005,6 +2094,7 @@ class PttRepository(
         WifiEnvironmentIssue.HOSTING_GROUP_FAILED -> PttErrorCode.HOSTING_FAILED
         WifiEnvironmentIssue.DISCOVERY_FAILED -> PttErrorCode.DISCOVERY_FAILED
         WifiEnvironmentIssue.HOTSPOT_START_FAILED -> PttErrorCode.HOTSPOT_START_FAILED
+        WifiEnvironmentIssue.P2P_LINK_FAILED -> PttErrorCode.P2P_LINK_FAILED
         WifiEnvironmentIssue.CONNECT_FAILED -> PttErrorCode.CONNECT_TIMEOUT
     }
 }

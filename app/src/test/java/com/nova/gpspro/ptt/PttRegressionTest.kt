@@ -76,7 +76,10 @@ class PttRegressionTest {
         var discoverPeersBehaviors = ArrayDeque<Pair<Boolean, Int>>()
 
         var currentLinkState: P2pDriver.GroupLinkState? = null
+        var hostedCreds: P2pDriver.HostedGroupCredentials? = P2pDriver.HostedGroupCredentials("DIRECT-RM-Nova", "pass987654")
         var availablePeers: List<P2pDriver.PeerSnapshot> = emptyList()
+        var directCredConnectBehaviors = ArrayDeque<Pair<Boolean, Int>>()
+        var macConnectBehaviors = ArrayDeque<Pair<Boolean, Int>>()
 
         var dnsServiceCb: ((String, String, String, String) -> Unit)? = null
         var dnsTxtCb: ((String, Map<String, String>, String, String) -> Unit)? = null
@@ -132,6 +135,11 @@ class PttRegressionTest {
             cb(currentLinkState)
         }
 
+        override fun requestHostedGroupCredentials(cb: (P2pDriver.HostedGroupCredentials?) -> Unit) {
+            callLog += "requestHostedGroupCredentials"
+            cb(hostedCreds)
+        }
+
         override fun setDnsSdListeners(
             onService: (String, String, String, String) -> Unit,
             onTxt: (String, Map<String, String>, String, String) -> Unit
@@ -179,9 +187,16 @@ class PttRegressionTest {
             cb(availablePeers)
         }
 
+        override fun connectWithGroupCredentials(networkName: String, passphrase: String, cb: (Boolean, Int) -> Unit) {
+            callLog += "connectWithGroupCredentials($networkName)"
+            val (ok, reason) = directCredConnectBehaviors.removeFirstOrNull() ?: (true to 0)
+            cb(ok, reason)
+        }
+
         override fun connect(deviceAddress: String, cb: (Boolean, Int) -> Unit) {
             callLog += "connect($deviceAddress)"
-            cb(true, 0)
+            val (ok, reason) = macConnectBehaviors.removeFirstOrNull() ?: (true to 0)
+            cb(ok, reason)
         }
 
         override fun cancelConnect() {
@@ -788,7 +803,7 @@ class PttRegressionTest {
         assertEquals(PttPhase.DISCONNECTED, repo.state.value.phase)
         assertEquals(PttErrorCode.WIFI_DISABLED, repo.state.value.errorCode)
 
-        // Scenario 8b: P2P link drops mid-connecting -> resets cleanly without stuck CONNECTING state
+        // Scenario 8b: P2P link drops before radio link finishes -> reports distinct P2P_LINK_FAILED (not generic timeout!)
         transport.wifiOn = true
         transport.autoCompleteConnect = false
         val dummyTarget = DiscoveredPttSession("02:11:22:33:44:55", "s1", "H", "H", 49320, 1, 100L)
@@ -796,7 +811,7 @@ class PttRegressionTest {
         assertEquals(PttPhase.CONNECTING, repo.state.value.phase)
         transport.listener?.onP2pLinkDisconnected()
         assertEquals(PttPhase.DISCONNECTED, repo.state.value.phase)
-        assertEquals(PttErrorCode.CONNECT_TIMEOUT, repo.state.value.errorCode)
+        assertEquals(PttErrorCode.P2P_LINK_FAILED, repo.state.value.errorCode)
 
         // Scenario 9: Repeatedly create & end host session 5 times in a row without deadlock or leak
         repeat(5) { iter ->
@@ -837,5 +852,109 @@ class PttRegressionTest {
         assertTrue(File(srcRoot, "location/LocationEngine.kt").isFile)
         assertTrue(File(srcRoot, "ui/RadarView.kt").isFile)
         assertTrue(File(srcRoot, "ui/RadarPage.kt").isFile)
+    }
+
+    // =========================================================================
+    // NEW REGRESSION: Two-Stage P2P Connect (Direct SSID/PSK -> MAC Fallback ->
+    //                 Distinct P2P_LINK_FAILED) + End-to-End Local-Only Hotspot
+    // =========================================================================
+
+    @Test
+    fun twoStageDirectGroupJoinFallbackAndLocalOnlyHotspotEndToEnd() {
+        // 1) Verify Host publishes gn (DIRECT-...), gp (passphrase), and goip into DNS-SD TXT
+        val hostSched = ManualTaskScheduler()
+        val hostDriver = FakeP2pDriver()
+        val hostWdm = WifiDirectManager(appCtx = null, customDriver = hostDriver, scheduler = hostSched)
+        var readyGoIp: String? = null
+        hostWdm.startHostingGroup("SESS99", "CaptainHost", 49320, onReady = { readyGoIp = it }, onError = { i, d -> fail("$i:$d") })
+        hostDriver.currentLinkState = P2pDriver.GroupLinkState(true, true, "192.168.49.1", "DIRECT-RM-Nova")
+        hostSched.advanceBy(400L)
+        assertEquals("192.168.49.1", readyGoIp)
+        val txt = hostDriver.registeredTxt!!
+        assertEquals("DIRECT-RM-Nova", txt["gn"])
+        assertEquals("pass987654", txt["gp"])
+        assertEquals("192.168.49.1", txt["goip"])
+
+        // 2) Verify Client Stage 1 (connectWithGroupCredentials) succeeds immediately when group forms
+        val c1Sched = ManualTaskScheduler()
+        val c1Driver = FakeP2pDriver()
+        val c1Wdm = WifiDirectManager(appCtx = null, customDriver = c1Driver, scheduler = c1Sched)
+        var linkedGoIp: String? = null
+        c1Wdm.listener = object : PttRadioTransport.Listener {
+            override fun onSessionsDiscovered(sessions: List<DiscoveredPttSession>) {}
+            override fun onDiscoveryFinishedEmpty() {}
+            override fun onP2pLinkEstablished(isGroupOwner: Boolean, groupOwnerIp: String) { linkedGoIp = groupOwnerIp }
+            override fun onP2pLinkDisconnected() {}
+            override fun onLocalHotspotStarted(ssid: String, passphrase: String) {}
+            override fun onTransportFailure(issue: WifiEnvironmentIssue, diagnostic: String) {}
+        }
+        val enrichedSession = DiscoveredPttSession(
+            deviceAddress = "aa:bb:cc:11:22:33",
+            sessionId = "SESS99",
+            hostName = "CaptainHost",
+            deviceName = "Pixel",
+            tcpPort = 49320,
+            protocolVersion = PttProtocol.PROTOCOL_VERSION,
+            lastSeenMs = 100L,
+            groupOwnerIpHint = "192.168.49.1",
+            groupNetworkName = "DIRECT-RM-Nova",
+            groupPassphrase = "pass987654"
+        )
+        c1Wdm.connectToSession(enrichedSession, onInitiated = {}, onFailed = { i, d -> fail("$i:$d") })
+        assertTrue(c1Driver.callLog.contains("connectWithGroupCredentials(DIRECT-RM-Nova)"))
+        c1Driver.currentLinkState = P2pDriver.GroupLinkState(true, false, "192.168.49.1", "DIRECT-RM-Nova")
+        c1Sched.advanceBy(500L)
+        assertEquals("192.168.49.1", linkedGoIp)
+
+        // 3) Verify Stage 1 timeout -> automatic fallback to Stage 2 MAC connect -> distinct P2P_LINK_FAILED if radio still fails
+        val c2Sched = ManualTaskScheduler()
+        val c2Driver = FakeP2pDriver().apply {
+            macConnectBehaviors.addLast(false to WifiDirectManager.REASON_ERROR) // first MAC attempt fails -> triggers peer refresh
+            macConnectBehaviors.addLast(true to 0) // second MAC attempt accepted, but never forms group
+        }
+        val c2Wdm = WifiDirectManager(appCtx = null, customDriver = c2Driver, scheduler = c2Sched)
+        var failedIssue: WifiEnvironmentIssue? = null
+        c2Wdm.connectToSession(
+            enrichedSession,
+            onInitiated = {},
+            onFailed = { issue, _ -> failedIssue = issue }
+        )
+        // Advance past Stage 1 (8s) + 250ms + peer refresh (900ms) + Stage 2 (10s)
+        repeat(25) { c2Sched.advanceBy(1_000L) }
+        assertTrue(c2Driver.callLog.contains("connect(aa:bb:cc:11:22:33)"))
+        assertEquals(WifiEnvironmentIssue.P2P_LINK_FAILED, failedIssue)
+
+        // 4) Full End-to-End Local-Only Hotspot Host + Guest Join over real localhost sockets
+        val hsHostTransport = FakeRadioTransport(wifiOn = true)
+        val hsHostRepo = buildTestRepo("HotspotHost", "HS_H1", hsHostTransport, tcpPort = 0)
+        assertTrue(hsHostRepo.createHostSession("HOT999", useLocalHotspotFallback = true))
+        assertEquals(PttPhase.IN_SESSION, hsHostRepo.state.value.phase)
+        assertNotNull("Host must expose Local-Only Hotspot SSID & Passphrase", hsHostRepo.state.value.hotspotInfo)
+        assertEquals("AndroidShare_RMG", hsHostRepo.state.value.hotspotInfo?.ssid)
+
+        // Read actual TCP port bound by host via reflection for ephemeral port test
+        val srvField = PttRepository::class.java.getDeclaredField("tcpServer").apply { isAccessible = true }
+        val actualHsPort = (srvField.get(hsHostRepo) as ServerSocket).localPort
+
+        val hsGuestTransport = FakeRadioTransport(
+            wifiOn = true,
+            gatewayCheck = LocalHotspotGatewayCheck.Ready("127.0.0.1")
+        )
+        val hsGuestRepo = buildTestRepo("HotspotGuest", "HS_G1", hsGuestTransport, tcpPort = actualHsPort)
+
+        // Wrong channel code over Local Hotspot -> must fail with AUTH_FAILED (never CONNECT_TIMEOUT!)
+        assertTrue(hsGuestRepo.requestJoinLocalHotspotGateway("BAD000", explicitPort = actualHsPort))
+        assertTrue(
+            waitUntil { hsGuestRepo.state.value.phase == PttPhase.DISCONNECTED && hsGuestRepo.state.value.errorCode == PttErrorCode.AUTH_FAILED }
+        )
+
+        // Correct channel code over Local Hotspot -> Host sees approval request -> accepts -> IN_SESSION!
+        assertTrue(hsGuestRepo.requestJoinLocalHotspotGateway("HOT999", explicitPort = actualHsPort))
+        assertTrue(waitUntil { hsHostRepo.state.value.pendingApprovals.size == 1 })
+        hsHostRepo.approveJoinRequest(hsHostRepo.state.value.pendingApprovals.first().requestId)
+        assertTrue(waitUntil { hsGuestRepo.state.value.phase == PttPhase.IN_SESSION && hsHostRepo.state.value.connectedCount == 2 })
+
+        hsHostRepo.endSessionByUser()
+        assertTrue(waitUntil { hsGuestRepo.state.value.phase == PttPhase.DISCONNECTED })
     }
 }

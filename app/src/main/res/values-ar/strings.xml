@@ -358,4 +358,16 @@
     <string name="ptt_you_tag">أنت</string>
     <string name="ptt_host_tag">المضيف</string>
     <string name="ptt_back">رجوع</string>
+    <string name="ptt_host_mode_label">طريقة إنشاء الاتصال</string>
+    <string name="ptt_host_mode_wifi_direct">Wi-Fi Direct مباشر</string>
+    <string name="ptt_host_mode_local_hotspot">نقطة اتصال محلية</string>
+    <string name="ptt_host_mode_hotspot_hint">تُنشئ شبكة Wi-Fi محلية معزولة دون إنترنت أو بلوتوث للهواتف التي تقيد ربط Wi-Fi Direct.</string>
+    <string name="ptt_hotspot_card_title">بيانات نقطة الاتصال المحلية (بدون إنترنت)</string>
+    <string name="ptt_hotspot_ssid_fmt">اسم الشبكة (SSID): %1$s</string>
+    <string name="ptt_hotspot_pass_fmt">كلمة المرور: %1$s</string>
+    <string name="ptt_hotspot_how_to_join">طريقة انضمام الهاتف الثاني:\n1) من إعدادات Wi-Fi في الهاتف الثاني، اتصل بالشبكة أعلاه وأدخل كلمة المرور.\n2) افتح شاشة اللاسلكي في الهاتف الثاني واضغط «انضمام لنقطة محلية».\n3) أدخل رمز القناة ثم اقبل طلب الانضمام على هذا الهاتف.</string>
+    <string name="ptt_err_p2p_link_failed">تعذر إتمام الربط المباشر عبر Wi-Fi Direct مع الهاتف المضيف. أعد المحاولة أو أنشئ الجلسة بوضع «نقطة اتصال محلية».</string>
+    <string name="ptt_err_approval_timeout">انتهت مهلة انتظار موافقة المضيف على طلب الانضمام.</string>
+    <string name="ptt_connecting_p2p_link">جارٍ إقامة رابط Wi-Fi Direct مع المضيف…</string>
+    <string name="ptt_connecting_tcp_auth">تم ربط الراديو — جارٍ التحقق من رمز القناة…</string>
 </resources>

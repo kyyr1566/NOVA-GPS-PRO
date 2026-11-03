@@ -361,4 +361,16 @@
     <string name="ptt_you_tag">You</string>
     <string name="ptt_host_tag">Host</string>
     <string name="ptt_back">Back</string>
+    <string name="ptt_host_mode_label">Session Connection Mode</string>
+    <string name="ptt_host_mode_wifi_direct">Wi-Fi Direct</string>
+    <string name="ptt_host_mode_local_hotspot">Local Hotspot</string>
+    <string name="ptt_host_mode_hotspot_hint">Creates an isolated offline Wi-Fi network (no internet, no Bluetooth) for phones whose firmware blocks Wi-Fi Direct pairing.</string>
+    <string name="ptt_hotspot_card_title">Local-Only Hotspot Details (Offline)</string>
+    <string name="ptt_hotspot_ssid_fmt">Network Name (SSID): %1$s</string>
+    <string name="ptt_hotspot_pass_fmt">Password: %1$s</string>
+    <string name="ptt_hotspot_how_to_join">How Phone 2 joins:\n1) In Phone 2 Wi-Fi Settings, connect to the SSID &amp; Password above.\n2) Open Walkie-Talkie on Phone 2 and tap \"Join Hotspot\".\n3) Enter the Channel Code and accept the request on this phone.</string>
+    <string name="ptt_err_p2p_link_failed">Could not establish the Wi-Fi Direct link with the host. Retry or create the session using \"Local Hotspot\" mode.</string>
+    <string name="ptt_err_approval_timeout">Timed out waiting for the host to approve your join request.</string>
+    <string name="ptt_connecting_p2p_link">Linking Wi-Fi Direct radio with host…</string>
+    <string name="ptt_connecting_tcp_auth">Radio linked — verifying channel code…</string>
 </resources>
