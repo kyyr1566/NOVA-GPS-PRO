@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Walkie-Talkie (Offline Push-to-Talk over Wi-Fi Direct only — no hotspot, no Bluetooth, no internet) -->
+    <!-- Walkie-Talkie: offline Push-to-Talk over Wi-Fi Direct only (no internet, no GPS coordinates) -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
