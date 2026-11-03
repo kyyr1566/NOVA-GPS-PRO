@@ -100,6 +100,7 @@ class RadarPage(act: MainActivity) : Page(act) {
         radar.apply {
             setRange(selectedRange)
             setScanning(autoScan)
+            distanceFormatter = { meters -> act.units.distance(meters) }
             onTargetClick = { selectTarget(it) }
             onBackgroundClick = { clearSelection() }
         }
@@ -302,11 +303,8 @@ class RadarPage(act: MainActivity) : Page(act) {
     /** Recomputes every distance/bearing from the current fix — markers follow real movement. */
     private fun refreshTargets() {
         val s = lastState
-        val withinRange = if (s == null || !isRealGpsFix(s)) emptyList() else savedDestinations.mapNotNull { destination ->
-            val geo = GeoMath.between(s.latitude, s.longitude, destination.latitude, destination.longitude)
-            // Only destinations really inside the selected range are ever shown.
-            if (geo.distanceM <= selectedRange) RadarTarget(destination.id, destination.name, geo.distanceM, geo.initialBearing) else null
-        }
+        val withinRange = if (s == null || !isRealGpsFix(s)) emptyList()
+        else filterTargetsInRange(s.latitude, s.longitude, savedDestinations, selectedRange)
         lastTargets = withinRange
         if (selectedId != null && withinRange.none { it.id == selectedId }) selectedId = null
         radar.setSelected(selectedId)
@@ -314,6 +312,11 @@ class RadarPage(act: MainActivity) : Page(act) {
         updateBottomHud()
     }
 
+    /**
+     * Summary strip below the radar: shows destination count and active range only.
+     * Location names and distances are shown exclusively in the compact callout card
+     * right beside the tapped dot inside [RadarView], never below the radar.
+     */
     private fun updateBottomHud() {
         val s = lastState
         if (s == null || !isRealGpsFix(s)) {
@@ -321,42 +324,19 @@ class RadarPage(act: MainActivity) : Page(act) {
             bottomText.text = c.getString(R.string.radar_waiting_fix)
             return
         }
-        val selected = selectedId?.let { id -> lastTargets.firstOrNull { it.id == id } }
-        if (selected != null) {
-            paintBottomDot(bandColor(RadarPlot.band(selected.distanceM, selectedRange)))
-            bottomText.text = c.getString(
-                R.string.radar_selected_fmt,
-                selected.name,
-                act.units.distance(selected.distanceM),
-                c.getString(R.string.radar_bearing_fmt, bearingDegrees(selected.bearing))
-            )
-            return
-        }
         if (lastTargets.isEmpty()) {
             paintBottomDot(C.TEXT3)
             bottomText.text = c.getString(R.string.radar_none_in_range)
             return
         }
-        val nearest = lastTargets.minByOrNull { it.distanceM } ?: return
-        paintBottomDot(bandColor(RadarPlot.band(nearest.distanceM, selectedRange)))
+        paintBottomDot(if (selectedId != null) C.GREEN else C.RED)
         val count = if (lastTargets.size == 1) c.getString(R.string.radar_count_one)
         else c.getString(R.string.radar_count_fmt, lastTargets.size)
-        bottomText.text = "$count  |  ${nearest.name}  |  ${act.units.distance(nearest.distanceM)}"
-    }
-
-    private fun bearingDegrees(bearing: Float): Int {
-        val v = Math.round(GeoMath.norm360(bearing))
-        return if (v == 360) 0 else v
+        bottomText.text = "$count  •  ${c.getString(R.string.radar_range)} ${rangeText(selectedRange)}"
     }
 
     private fun paintBottomDot(color: Int) {
         bottomDot.background = roundRect(color, c.dp(4).toFloat())
-    }
-
-    private fun bandColor(band: RadarPlot.Band): Int = when (band) {
-        RadarPlot.Band.NEAR -> C.GREEN
-        RadarPlot.Band.MEDIUM -> C.AMBER
-        RadarPlot.Band.FAR -> C.RED
     }
 
     private fun selectTarget(target: RadarTarget) {
@@ -394,5 +374,21 @@ class RadarPage(act: MainActivity) : Page(act) {
         private const val MENU_CUSTOM = 100
         private const val CUSTOM_MIN_M = 10.0
         private const val CUSTOM_MAX_M = 2_000_000.0
+
+        /**
+         * Pure range-filtering & geodesic computation: only destinations strictly within
+         * [rangeMeters] of ([userLat], [userLon]) are returned, with their real distance & bearing.
+         */
+        fun filterTargetsInRange(
+            userLat: Double,
+            userLon: Double,
+            destinations: List<Destination>,
+            rangeMeters: Double
+        ): List<RadarTarget> = destinations.mapNotNull { destination ->
+            val geo = GeoMath.between(userLat, userLon, destination.latitude, destination.longitude)
+            if (geo.distanceM <= rangeMeters) {
+                RadarTarget(destination.id, destination.name, geo.distanceM, geo.initialBearing)
+            } else null
+        }
     }
 }

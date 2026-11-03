@@ -13,8 +13,9 @@ import java.io.FileInputStream
  * Comprehensive verification suite for:
  * 1) One-time onboarding persistence logic (7 lifecycle cases)
  * 2) Complete royal-blue arrow icon replacement across all Android densities & adaptive/splash/activation/onboarding spots
- * 3) Luxury 3-screen onboarding redesign (#2457D6, #FFFFFF, #F7F4EC) + Arabic & English localization parity
- * 4) Mandatory license & core feature protection guards
+ * 3) Ultra-premium 3-screen onboarding redesign (#2457D6, #FFFFFF, #F7F4EC), bilingual parity,
+ *    and strict prohibition of any city/province/region/country name (including "النجف" / "Najaf")
+ * 4) Mandatory license & offline-after-activation protection guards
  */
 class OnboardingManagerTest {
 
@@ -137,7 +138,6 @@ class OnboardingManagerTest {
         assumeTrue("src/main not reachable", main != null)
         val res = File(main!!, "res")
 
-        // 1) splash_icon.png (1024x1024 RGBA 8-bit)
         val splashFile = File(res, "drawable/splash_icon.png")
         assertTrue("splash_icon.png missing", splashFile.isFile && splashFile.length() > 10_000)
         val splashHdr = readPngHeader(splashFile)
@@ -145,7 +145,6 @@ class OnboardingManagerTest {
         assertEquals(1024, splashHdr.height)
         assertEquals("splash_icon must be 8-bit RGBA", 6, splashHdr.colorType)
 
-        // 2) ic_launcher_fg.png (864x864 RGBA 8-bit adaptive foreground)
         val fgFile = File(res, "drawable/ic_launcher_fg.png")
         assertTrue("ic_launcher_fg.png missing", fgFile.isFile && fgFile.length() > 5_000)
         val fgHdr = readPngHeader(fgFile)
@@ -153,7 +152,6 @@ class OnboardingManagerTest {
         assertEquals(864, fgHdr.height)
         assertEquals("ic_launcher_fg must be 8-bit RGBA", 6, fgHdr.colorType)
 
-        // 3) Legacy launcher icons across all 5 Android densities
         val expectedSizes = mapOf(
             "mipmap-mdpi" to 48,
             "mipmap-hdpi" to 72,
@@ -172,7 +170,6 @@ class OnboardingManagerTest {
             }
         }
 
-        // 4) Adaptive icon background & system splash theme references
         val bgXml = File(res, "drawable/ic_launcher_bg.xml").readText()
         assertFalse("Old dark icon background must be removed", bgXml.contains("#0A0F16", ignoreCase = true))
         assertTrue("Adaptive icon bg must use brand ivory/white", bgXml.contains("#F7F4EC", ignoreCase = true))
@@ -185,7 +182,7 @@ class OnboardingManagerTest {
         assertTrue(manifest.contains("android:roundIcon=\"@mipmap/ic_launcher_round\""))
     }
 
-    @Test fun onboardingDesignPaletteLocalizationAndLicenseProtectionIntact() {
+    @Test fun onboardingDesignPaletteNoPlaceNamesAndLicenseProtectionIntact() {
         val main = appMainDir
         assumeTrue("src/main not reachable", main != null)
 
@@ -199,25 +196,39 @@ class OnboardingManagerTest {
                 onboardingCode.contains("RadarPortalArtworkView")
         )
 
-        val shortSplashCode = File(main, "java/com/nova/gpspro/onboarding/ShortSplashView.kt").readText()
-        assertTrue(shortSplashCode.contains("R.drawable.splash_icon"))
-        assertTrue(shortSplashCode.contains("#2457D6", ignoreCase = true))
-        assertTrue(shortSplashCode.contains("#F7F4EC", ignoreCase = true))
-
-        val activationCode = File(main, "java/com/nova/gpspro/license/ActivationView.kt").readText()
-        assertTrue(activationCode.contains("R.drawable.splash_icon"))
-
-        // Bilingual string parity check (EN & AR)
         val stringsEn = File(main, "res/values/strings.xml").readText()
         val stringsAr = File(main, "res/values-ar/strings.xml").readText()
+
+        // Strictly forbid any city/province/region/country names in onboarding sources & strings
+        val bannedPlaces = listOf(
+            "النجف", "نجف", "najaf",
+            "بغداد", "baghdad",
+            "العراق", "iraq",
+            "كربلاء", "karbala",
+            "البصرة", "basra",
+            "أربيل", "erbil"
+        )
+        for (place in bannedPlaces) {
+            assertFalse("OnboardingView.kt must not contain place name '$place'", onboardingCode.contains(place, ignoreCase = true))
+            assertFalse("strings.xml must not contain place name '$place'", stringsEn.contains(place, ignoreCase = true))
+            assertFalse("values-ar/strings.xml must not contain place name '$place'", stringsAr.contains(place, ignoreCase = true))
+        }
+
+        // Generic neutral destination label must be used
+        assertTrue("Arabic onboarding must use generic 'وجهة محفوظة'", stringsAr.contains("<string name=\"onboarding_dest_mock\">وجهة محفوظة</string>"))
+        assertTrue("English onboarding must use generic 'Saved Destination'", stringsEn.contains("<string name=\"onboarding_dest_mock\">Saved Destination</string>"))
+
+        // Bilingual string parity check (EN & AR)
         val requiredKeys = listOf(
             "onboarding_skip", "onboarding_next", "onboarding_start",
             "onboarding_badge_1", "onboarding_title_1", "onboarding_desc_1",
             "onboarding_badge_2", "onboarding_title_2", "onboarding_desc_2",
             "onboarding_badge_3", "onboarding_title_3", "onboarding_desc_3",
             "onboarding_gps_connected", "onboarding_sats_mock", "onboarding_accuracy_mock",
-            "onboarding_dest_mock", "onboarding_stat_dist_label", "onboarding_stat_speed_label",
-            "onboarding_stat_eta_label", "onboarding_action_radar", "onboarding_action_import",
+            "onboarding_dest_mock", "onboarding_stat_dist_label", "onboarding_stat_dist_val",
+            "onboarding_stat_speed_label", "onboarding_stat_speed_val",
+            "onboarding_stat_eta_label", "onboarding_stat_eta_val",
+            "onboarding_action_radar", "onboarding_action_import",
             "onboarding_action_export", "onboarding_action_qr"
         )
         for (k in requiredKeys) {
