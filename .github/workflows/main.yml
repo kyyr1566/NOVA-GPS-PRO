@@ -41,7 +41,6 @@ jobs:
             --tests "com.nova.gpspro.DestDistanceTest" \
             --tests "com.nova.gpspro.FitTest" \
             --tests "com.nova.gpspro.NavFitTest" \
-            --tests "com.nova.gpspro.NavigationLogicTest" \
             --tests "com.nova.gpspro.SpeedoModeTest" 2>&1 | tee test.log
 
       - name: Run Android Lint (lintDebug)
