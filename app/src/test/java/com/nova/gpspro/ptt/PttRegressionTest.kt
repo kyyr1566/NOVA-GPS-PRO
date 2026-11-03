@@ -835,6 +835,7 @@ class PttRegressionTest {
         assumeTrue(srcRoot != null)
         assertTrue(File(srcRoot!!, "license/LicenseManager.kt").isFile)
         assertTrue(File(srcRoot, "location/LocationEngine.kt").isFile)
-        assertTrue(File(srcRoot, "RadarView.kt").isFile)
+        assertTrue(File(srcRoot, "ui/RadarView.kt").isFile)
+        assertTrue(File(srcRoot, "ui/RadarPage.kt").isFile)
     }
 }
