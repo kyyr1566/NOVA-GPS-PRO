@@ -30,6 +30,7 @@ jobs:
           set -o pipefail
           ./gradlew --no-daemon --stacktrace testDebugUnitTest \
             --tests "com.nova.gpspro.ptt.PttWalkieTalkieTest" \
+            --tests "com.nova.gpspro.ptt.PttRegressionTest" \
             --tests "com.nova.gpspro.OnboardingManagerTest" \
             --tests "com.nova.gpspro.ThemeSourceTest" \
             --tests "com.nova.gpspro.ThemeContrastTest" \
@@ -56,7 +57,7 @@ jobs:
           set -o pipefail
           ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
           SRC_APK="app/build/outputs/apk/debug/app-debug.apk"
-          OUT_APK="app/build/outputs/apk/debug/RMG-GPS-Pro-WalkieTalkie-debug.apk"
+          OUT_APK="app/build/outputs/apk/debug/RMG-GPS-Pro-WalkieTalkie-Fixed-debug.apk"
           test -f "$SRC_APK"
           cp -f "$SRC_APK" "$OUT_APK"
           SIZE=$(stat -c%s "$OUT_APK")
@@ -74,9 +75,9 @@ jobs:
           if [ -z "$ERR" ]; then ERR=$(tail -n 30 test.log lint.log build.log 2>/dev/null | tr '\n' ' | ' | head -c 950); fi
           echo "::error title=Diagnostics::$ERR"
 
-      - name: Upload RMG-GPS-Pro-WalkieTalkie-debug.apk Artifact
+      - name: Upload RMG-GPS-Pro-WalkieTalkie-Fixed-debug.apk Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RMG-GPS-Pro-WalkieTalkie-debug.apk
-          path: app/build/outputs/apk/debug/RMG-GPS-Pro-WalkieTalkie-debug.apk
+          name: RMG-GPS-Pro-WalkieTalkie-Fixed-debug.apk
+          path: app/build/outputs/apk/debug/RMG-GPS-Pro-WalkieTalkie-Fixed-debug.apk
           if-no-files-found: error

@@ -279,7 +279,7 @@ class PttPage(
         discoveredListContainer = act.vbox()
         scanSection.addView(discoveredListContainer, lp())
 
-        // Optional Local Hotspot Gateway Join helper inside scan card
+        // Optional Local Hotspot Gateway Join helper inside scan card (clearly separated from Wi-Fi Direct)
         val hotspotJoinBox = act.hbox().apply {
             gravity = Gravity.CENTER_VERTICAL
             background = roundRect(C.CARD_SOFT, act.dp(14).toFloat(), C.BORDER, act.dp(1))
@@ -290,14 +290,17 @@ class PttPage(
         hsTextCol.addView(act.text(act.getString(R.string.ptt_join_hotspot_ip_desc), 11.5f, C.TEXT2), lp().margins(t = act.dp(2)))
         hotspotJoinBox.addView(hsTextCol, lp(0, weight = 1f).margins(e = act.dp(8)))
         val hsJoinBtn = uniformActionButton(
-            label = act.getString(R.string.ptt_request_connect),
+            label = act.getString(R.string.ptt_join_hotspot_btn),
             filled = false,
             accentColor = C.GOLD_DEEP,
-            heightDp = 40
+            heightDp = 40,
+            textSp = 12.5f
         ) {
-            showJoinChannelPrompt(session = null)
+            if (commitTypedNameOrWarn()) {
+                ensureWalkiePermissionsThen { showJoinLocalHotspotDialog() }
+            }
         }
-        hotspotJoinBox.addView(hsJoinBtn, LinearLayout.LayoutParams(act.dp(112), act.dp(40)))
+        hotspotJoinBox.addView(hsJoinBtn, LinearLayout.LayoutParams(act.dp(124), act.dp(40)))
         scanSection.addView(hotspotJoinBox, lp().margins(t = act.dp(10)))
 
         lobbyCol.addView(scanSection, lp())
@@ -495,29 +498,64 @@ class PttPage(
 
         if (!inSession) {
             pttCircleButton.stopPulseAnimation()
-            headerSubtitle.text = act.getString(R.string.ptt_status_disconnected)
-            headerSubtitle.setTextColor(C.TEXT2)
+            headerSubtitle.text = when (state.phase) {
+                PttPhase.CHECKING -> act.getString(R.string.ptt_checking_status)
+                PttPhase.HOSTING -> act.getString(R.string.ptt_hosting_starting_status)
+                PttPhase.SCANNING -> act.getString(R.string.ptt_discovery_searching)
+                PttPhase.CONNECTING -> act.getString(R.string.ptt_connecting_status)
+                PttPhase.WAITING_APPROVAL -> act.getString(R.string.ptt_waiting_host_approval)
+                else -> act.getString(R.string.ptt_status_disconnected)
+            }
+            headerSubtitle.setTextColor(
+                if (state.phase == PttPhase.HOSTING || state.phase == PttPhase.SCANNING || state.phase == PttPhase.CONNECTING || state.phase == PttPhase.WAITING_APPROVAL)
+                    C.GOLD
+                else C.TEXT2
+            )
 
-            connectingCard.visibility = if (state.phase == PttPhase.CONNECTING || state.phase == PttPhase.WAITING_APPROVAL) {
+            connectingCard.visibility = if (
+                state.phase == PttPhase.CHECKING ||
+                state.phase == PttPhase.HOSTING ||
+                state.phase == PttPhase.CONNECTING ||
+                state.phase == PttPhase.WAITING_APPROVAL
+            ) {
                 View.VISIBLE
             } else {
                 View.GONE
             }
-            connectingStatusText.text = if (state.phase == PttPhase.WAITING_APPROVAL) {
-                act.getString(R.string.ptt_waiting_host_approval)
-            } else {
-                act.getString(R.string.ptt_connecting_status)
+            connectingStatusText.text = when (state.phase) {
+                PttPhase.CHECKING -> act.getString(R.string.ptt_checking_status)
+                PttPhase.HOSTING -> act.getString(R.string.ptt_hosting_starting_status)
+                PttPhase.WAITING_APPROVAL -> act.getString(R.string.ptt_waiting_host_approval)
+                else -> act.getString(R.string.ptt_connecting_status)
             }
 
-            scanSection.visibility = if (state.phase == PttPhase.SCANNING || state.discoveredSessions.isNotEmpty()) {
+            scanSection.visibility = if (
+                state.phase == PttPhase.SCANNING ||
+                state.discoveredSessions.isNotEmpty() ||
+                state.discoveryState == PttDiscoveryState.FAILED ||
+                state.discoveryState == PttDiscoveryState.FOUND
+            ) {
                 View.VISIBLE
             } else {
                 View.GONE
             }
-            scanStatusLabel.text = if (state.phase == PttPhase.SCANNING) {
-                act.getString(R.string.ptt_scanning_sessions)
-            } else {
-                act.getString(R.string.ptt_find_session)
+            when {
+                state.phase == PttPhase.SCANNING && state.discoveredSessions.isEmpty() -> {
+                    scanStatusLabel.text = act.getString(R.string.ptt_discovery_searching)
+                    scanStatusLabel.setTextColor(C.GOLD_DEEP)
+                }
+                state.discoveredSessions.isNotEmpty() || state.discoveryState == PttDiscoveryState.FOUND -> {
+                    scanStatusLabel.text = act.getString(R.string.ptt_discovery_found)
+                    scanStatusLabel.setTextColor(C.GREEN)
+                }
+                state.discoveryState == PttDiscoveryState.FAILED -> {
+                    scanStatusLabel.text = act.getString(R.string.ptt_discovery_failed)
+                    scanStatusLabel.setTextColor(C.RED)
+                }
+                else -> {
+                    scanStatusLabel.text = act.getString(R.string.ptt_find_session)
+                    scanStatusLabel.setTextColor(C.GOLD_DEEP)
+                }
             }
             renderDiscoveredSessions(state.discoveredSessions)
             return
@@ -605,18 +643,37 @@ class PttPage(
         errorActionsRow.visibility = View.GONE
 
         errorBannerText.text = when (errorCode) {
-            PttErrorCode.AUTH_FAILED -> act.getString(R.string.ptt_err_auth_failed)
-            PttErrorCode.REJECTED_BY_HOST -> act.getString(R.string.ptt_err_rejected_by_host)
-            PttErrorCode.CONNECT_TIMEOUT -> act.getString(R.string.ptt_err_connect_timeout)
-            PttErrorCode.P2P_UNSUPPORTED -> act.getString(R.string.ptt_err_p2p_unsupported)
             PttErrorCode.WIFI_DISABLED -> act.getString(R.string.ptt_err_wifi_disabled)
             PttErrorCode.LOCATION_SERVICE_OFF -> act.getString(R.string.ptt_err_location_service_off)
             PttErrorCode.PERMISSION_MISSING -> act.getString(R.string.ptt_perm_denied_msg)
+            PttErrorCode.P2P_UNSUPPORTED -> act.getString(R.string.ptt_err_p2p_unsupported)
+            PttErrorCode.HOSTING_FAILED -> act.getString(R.string.ptt_err_hosting_failed)
+            PttErrorCode.DISCOVERY_FAILED -> act.getString(R.string.ptt_err_discovery_failed)
+            PttErrorCode.HOTSPOT_START_FAILED -> act.getString(R.string.ptt_err_hotspot_start_failed)
+            PttErrorCode.HOTSPOT_NOT_CONNECTED -> act.getString(R.string.ptt_err_hotspot_not_connected)
+            PttErrorCode.PROTOCOL_INCOMPATIBLE -> act.getString(R.string.ptt_err_protocol_incompatible)
+            PttErrorCode.AUTH_FAILED -> act.getString(R.string.ptt_err_auth_failed)
+            PttErrorCode.REJECTED_BY_HOST -> act.getString(R.string.ptt_err_rejected_by_host)
+            PttErrorCode.CONNECT_TIMEOUT -> act.getString(R.string.ptt_err_connect_timeout)
+            PttErrorCode.CONNECTION_REFUSED -> act.getString(R.string.ptt_err_connection_refused)
             PttErrorCode.NONE -> ""
         }
 
         when (errorCode) {
-            PttErrorCode.WIFI_DISABLED, PttErrorCode.P2P_UNSUPPORTED -> {
+            PttErrorCode.WIFI_DISABLED, PttErrorCode.HOTSPOT_NOT_CONNECTED -> {
+                errorActionsRow.visibility = View.VISIBLE
+                val wifiBtn = uniformActionButton(
+                    label = act.getString(R.string.ptt_open_wifi_settings),
+                    filled = true,
+                    accentColor = C.GOLD,
+                    heightDp = 40
+                ) {
+                    try { act.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) } catch (_: Throwable) {}
+                }
+                errorActionsRow.addView(wifiBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, act.dp(40)))
+            }
+
+            PttErrorCode.P2P_UNSUPPORTED, PttErrorCode.HOSTING_FAILED -> {
                 errorActionsRow.visibility = View.VISIBLE
                 val wifiBtn = uniformActionButton(
                     label = act.getString(R.string.ptt_open_wifi_settings),
@@ -640,6 +697,21 @@ class PttPage(
                 errorActionsRow.addView(hsBtn, LinearLayout.LayoutParams(0, act.dp(38), 1f).margins(s = act.dp(6)))
             }
 
+            PttErrorCode.DISCOVERY_FAILED -> {
+                errorActionsRow.visibility = View.VISIBLE
+                val retryBtn = uniformActionButton(
+                    label = act.getString(R.string.ptt_rescan),
+                    filled = true,
+                    accentColor = C.GOLD,
+                    heightDp = 40
+                ) {
+                    if (commitTypedNameOrWarn()) {
+                        ensureWalkiePermissionsThen { repo.startScanningSessions() }
+                    }
+                }
+                errorActionsRow.addView(retryBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, act.dp(40)))
+            }
+
             PttErrorCode.LOCATION_SERVICE_OFF -> {
                 errorActionsRow.visibility = View.VISIBLE
                 val locBtn = uniformActionButton(
@@ -660,8 +732,13 @@ class PttPage(
     private fun renderDiscoveredSessions(sessions: List<DiscoveredPttSession>) {
         discoveredListContainer.removeAllViews()
         if (sessions.isEmpty()) {
+            val emptyMsg = if (latestState.phase == PttPhase.SCANNING) {
+                act.getString(R.string.ptt_scanning_sessions)
+            } else {
+                act.getString(R.string.ptt_no_sessions_found)
+            }
             discoveredListContainer.addView(
-                act.text(act.getString(R.string.ptt_no_sessions_found), 13f, C.TEXT2).apply {
+                act.text(emptyMsg, 13f, C.TEXT2).apply {
                     gravity = Gravity.CENTER
                     background = roundRect(C.CARD_SOFT, act.dp(14).toFloat(), C.BORDER, act.dp(1))
                     setPadding(act.dp(14), act.dp(18), act.dp(14), act.dp(18))
@@ -679,7 +756,12 @@ class PttPage(
             }
             val infoCol = act.vbox()
             infoCol.addView(act.text(act.getString(R.string.ptt_discovered_host_fmt, session.hostName), 15f, C.TEXT, Fonts.bold))
-            if (session.deviceName.isNotBlank() && session.deviceName != session.hostName) {
+            if (session.discoveredViaFallback) {
+                infoCol.addView(
+                    act.text(act.getString(R.string.ptt_discovered_peer_fallback_badge), 11.5f, C.GOLD_DEEP),
+                    lp().margins(t = act.dp(2))
+                )
+            } else if (session.deviceName.isNotBlank() && session.deviceName != session.hostName) {
                 infoCol.addView(act.text(session.deviceName, 12f, C.TEXT2), lp().margins(t = act.dp(2)))
             }
             row.addView(infoCol, lp(0, weight = 1f).margins(e = act.dp(8)))
@@ -859,14 +941,12 @@ class PttPage(
             .show()
     }
 
-    private fun showJoinChannelPrompt(session: DiscoveredPttSession?) {
+    private fun showJoinChannelPrompt(session: DiscoveredPttSession) {
         val box = act.vbox()
-        if (session != null) {
-            box.addView(
-                act.text(act.getString(R.string.ptt_discovered_host_fmt, session.hostName), 14.5f, C.GOLD_DEEP, Fonts.bold),
-                lp().margins(b = act.dp(8))
-            )
-        }
+        box.addView(
+            act.text(act.getString(R.string.ptt_discovered_host_fmt, session.hostName), 14.5f, C.GOLD_DEEP, Fonts.bold),
+            lp().margins(b = act.dp(8))
+        )
         box.addView(act.text(act.getString(R.string.ptt_channel_code_label), 12.5f, C.TEXT2, Fonts.medium), lp().margins(b = act.dp(6)))
 
         val codeInput = act.input(act.getString(R.string.ptt_channel_code_hint)).apply {
@@ -894,11 +974,81 @@ class PttPage(
                     return@button
                 }
                 dlg.dismiss()
-                if (session != null) {
-                    repo.requestJoinDiscoveredSession(session, raw)
-                } else {
-                    repo.requestJoinLocalHotspotGateway(raw)
+                repo.requestJoinDiscoveredSession(session, raw)
+            }
+            .show()
+    }
+
+    /**
+     * Dedicated dialog exclusively for Local-Only Hotspot fallback.
+     * Pre-checks whether the phone is actually associated with a Wi-Fi Hotspot gateway first so the
+     * user never confuses it with standard Wi-Fi Direct discovery or sees a false "Wi-Fi is off" error.
+     */
+    private fun showJoinLocalHotspotDialog() {
+        when (repo.wifiDirect.checkLocalHotspotGateway()) {
+            is LocalHotspotGatewayCheck.WifiTurnedOff -> {
+                NovaDialog(act)
+                    .title(act.getString(R.string.ptt_join_hotspot_dialog_title))
+                    .message(act.getString(R.string.ptt_err_wifi_disabled))
+                    .button(act.getString(R.string.cancel), C.TEXT2) { it.dismiss() }
+                    .button(act.getString(R.string.ptt_open_wifi_settings), filled = true) { dlg ->
+                        dlg.dismiss()
+                        try { act.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) } catch (_: Throwable) {}
+                    }
+                    .show()
+                return
+            }
+            is LocalHotspotGatewayCheck.NotConnectedToHotspot -> {
+                NovaDialog(act)
+                    .title(act.getString(R.string.ptt_join_hotspot_dialog_title))
+                    .message(act.getString(R.string.ptt_err_hotspot_not_connected))
+                    .button(act.getString(R.string.cancel), C.TEXT2) { it.dismiss() }
+                    .button(act.getString(R.string.ptt_open_wifi_settings), filled = true) { dlg ->
+                        dlg.dismiss()
+                        try { act.startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) } catch (_: Throwable) {}
+                    }
+                    .show()
+                return
+            }
+            is LocalHotspotGatewayCheck.Ready -> Unit
+        }
+
+        val box = act.vbox()
+        box.addView(
+            act.text(act.getString(R.string.ptt_join_hotspot_instructions), 12.5f, C.TEXT2).apply {
+                background = roundRect(C.GOLD_PALE, act.dp(12).toFloat(), C.GOLD_LIGHT, act.dp(1))
+                setPadding(act.dp(12), act.dp(10), act.dp(12), act.dp(10))
+            },
+            lp().margins(b = act.dp(10))
+        )
+        box.addView(act.text(act.getString(R.string.ptt_channel_code_label), 12.5f, C.TEXT2, Fonts.medium), lp().margins(b = act.dp(6)))
+
+        val codeInput = act.input(act.getString(R.string.ptt_channel_code_hint)).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            filters = arrayOf(InputFilter.AllCaps(), InputFilter.LengthFilter(8))
+            textDirection = View.TEXT_DIRECTION_LTR
+            if (PttSettings.isValidChannelCode(repo.settings.lastChannelCode)) {
+                setText(repo.settings.lastChannelCode)
+            }
+        }
+        box.addView(codeInput, lp())
+
+        val errLabel = act.text("", 12.5f, C.RED, Fonts.medium).apply { visibility = View.GONE }
+        box.addView(errLabel, lp().margins(t = act.dp(6)))
+
+        NovaDialog(act)
+            .title(act.getString(R.string.ptt_join_hotspot_dialog_title))
+            .content(box)
+            .button(act.getString(R.string.cancel), C.TEXT2) { it.dismiss() }
+            .button(act.getString(R.string.ptt_join_hotspot_btn), filled = true) { dlg ->
+                val raw = codeInput.text?.toString()?.trim().orEmpty()
+                if (!PttSettings.isValidChannelCode(raw)) {
+                    errLabel.text = act.getString(R.string.ptt_err_invalid_code)
+                    errLabel.visibility = View.VISIBLE
+                    return@button
                 }
+                dlg.dismiss()
+                repo.requestJoinLocalHotspotGateway(raw)
             }
             .show()
     }

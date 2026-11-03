@@ -469,10 +469,21 @@ class PttWalkieTalkieTest {
             assertTrue("Empty Arabic value for $k", arMap[k]!!.isNotBlank())
         }
 
-        // Exact mandatory Portal 5th card texts
+        // Exact mandatory Portal 5th card texts & Wi-Fi / Discovery texts
         assertEquals("Walkie-Talkie", enMap["ptt_portal_title"])
         assertEquals("Talk to nearby devices without internet.", enMap["ptt_portal_desc"])
         assertEquals("اللاسلكي", arMap["ptt_portal_title"])
         assertEquals("تحدث مع الأجهزة القريبة مباشرة دون إنترنت", arMap["ptt_portal_desc"])
+        assertEquals("Wi-Fi مغلق. يرجى تشغيل Wi-Fi للمتابعة", arMap["ptt_err_wifi_disabled"])
+        assertEquals("فتح إعدادات Wi-Fi", arMap["ptt_open_wifi_settings"])
+        assertEquals("جارٍ البحث", arMap["ptt_discovery_searching"])
+        assertEquals("تم العثور على جلسة", arMap["ptt_discovery_found"])
+        assertEquals("فشل الاكتشاف", arMap["ptt_discovery_failed"])
+
+        // Verify corrected AOSP DNS-SD instance & service type constants
+        assertEquals("rmgptt", PttProtocol.DNS_SERVICE_INSTANCE)
+        assertEquals("_rmgptt._tcp", PttProtocol.DNS_SERVICE_TYPE)
+        assertTrue(PttProtocol.matchesDnsSdService("rmgptt._rmgptt._tcp.local."))
+        assertFalse(PttProtocol.matchesDnsSdService("printer._ipp._tcp.local."))
     }
 }

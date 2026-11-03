@@ -171,12 +171,78 @@ object PttSecurity {
     }
 }
 
+object PttDiagnostics {
+    const val TAG = "RMG_PTT"
+    private val ring = ArrayDeque<String>(32)
+
+    @Volatile
+    var lastSummary: String = ""
+        private set
+
+    fun info(stage: String, detail: String) = record("I", stage, detail, null)
+
+    fun warn(stage: String, detail: String, error: Throwable? = null) = record("W", stage, detail, error)
+
+    fun error(stage: String, detail: String, error: Throwable? = null) = record("E", stage, detail, error)
+
+    fun p2pReasonName(reason: Int): String = when (reason) {
+        0 -> "P2P_INTERNAL_ERROR(0)"
+        1 -> "P2P_UNSUPPORTED(1)"
+        2 -> "P2P_BUSY(2)"
+        3 -> "NO_SERVICE_REQUESTS(3)"
+        else -> "CODE($reason)"
+    }
+
+    @Synchronized
+    fun snapshot(): List<String> = ring.toList()
+
+    @Synchronized
+    fun clear() {
+        ring.clear()
+        lastSummary = ""
+    }
+
+    @Synchronized
+    private fun record(level: String, stage: String, detail: String, err: Throwable?) {
+        val errSuffix = if (err != null) " [${err.javaClass.simpleName}: ${err.message.orEmpty()}]" else ""
+        val entry = "[$level/$stage] $detail$errSuffix"
+        if (ring.size >= 32) ring.removeFirst()
+        ring.addLast(entry)
+        lastSummary = "$stage: $detail$errSuffix"
+        // Safe Logcat emission on real Android devices without breaking pure JVM unit tests
+        try {
+            val logCls = Class.forName("android.util.Log")
+            val methodName = when (level) {
+                "E" -> "e"
+                "W" -> "w"
+                else -> "i"
+            }
+            if (err != null) {
+                logCls.getMethod(methodName, String::class.java, String::class.java, Throwable::class.java)
+                    .invoke(null, TAG, "[$stage] $detail", err)
+            } else {
+                logCls.getMethod(methodName, String::class.java, String::class.java)
+                    .invoke(null, TAG, "[$stage] $detail")
+            }
+        } catch (_: Throwable) {
+            // Running inside pure JVM unit test environment
+        }
+    }
+}
+
 object PttProtocol {
     const val PROTOCOL_VERSION: Int = 1
     const val DEFAULT_TCP_PORT: Int = 49320
     const val DEFAULT_UDP_PORT: Int = 49321
-    const val DNS_SERVICE_INSTANCE: String = "_rmgptt"
-    const val DNS_SERVICE_TYPE: String = "_tcp"
+    /** RFC 6763 / Android WifiP2pDnsSdServiceInfo compliant instance & service type -> rmgptt._rmgptt._tcp.local. */
+    const val DNS_SERVICE_INSTANCE: String = "rmgptt"
+    const val DNS_SERVICE_TYPE: String = "_rmgptt._tcp"
+
+    fun matchesDnsSdService(instanceOrDomain: String?, regType: String? = null): Boolean {
+        val a = instanceOrDomain.orEmpty()
+        val b = regType.orEmpty()
+        return a.contains("rmgptt", ignoreCase = true) || b.contains("_rmgptt", ignoreCase = true)
+    }
 
     private const val CTRL_MAGIC_0: Byte = 0x57 // 'W'
     private const val CTRL_MAGIC_1: Byte = 0x54 // 'T'

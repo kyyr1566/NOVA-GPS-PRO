@@ -42,7 +42,8 @@ class PttService : Service() {
         val app = application as? NovaApp
         if (app == null) {
             intentionalStop = true
-            stopSelf()
+            satisfyForegroundContractBeforeStop()
+            dismissAndStopSelf()
             return START_NOT_STICKY
         }
 
@@ -53,6 +54,7 @@ class PttService : Service() {
             }
             ACTION_END_SESSION -> {
                 intentionalStop = true
+                satisfyForegroundContractBeforeStop()
                 repo.endSessionByUser()
                 dismissAndStopSelf()
                 return START_NOT_STICKY
@@ -62,12 +64,43 @@ class PttService : Service() {
         val uiState = repo.state.value
         if (uiState.phase != PttPhase.IN_SESSION) {
             intentionalStop = true
+            satisfyForegroundContractBeforeStop()
             dismissAndStopSelf()
             return START_NOT_STICKY
         }
 
         promoteOrUpdateForeground(repo, uiState)
         return START_NOT_STICKY
+    }
+
+    /**
+     * Guarantees Android 8–16's startForegroundService() -> startForeground() contract is always
+     * fulfilled even if the session was cancelled milliseconds before onStartCommand executed,
+     * preventing ForegroundServiceDidNotStartInTimeException crashes.
+     */
+    private fun satisfyForegroundContractBeforeStop() {
+        try {
+            val locCtx = localizedContext()
+            ensureChannel(locCtx)
+            val minimal = Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_ptt_radio)
+                .setContentTitle(locCtx.getString(R.string.ptt_notif_title))
+                .setOngoing(false)
+                .build()
+            startForeground(NOTIFICATION_ID, minimal, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } catch (t: Throwable) {
+            try {
+                val locCtx = localizedContext()
+                ensureChannel(locCtx)
+                val minimal = Notification.Builder(this, CHANNEL_ID)
+                    .setSmallIcon(R.drawable.ic_ptt_radio)
+                    .setContentTitle(locCtx.getString(R.string.ptt_notif_title))
+                    .build()
+                startForeground(NOTIFICATION_ID, minimal)
+            } catch (inner: Throwable) {
+                PttDiagnostics.warn("PttService", "satisfyForegroundContract fallback", inner)
+            }
+        }
     }
 
     /** Android 15+ (SDK 35) FGS timeout hook: prevents crash and tears down session cleanly so no ghost state remains. */
@@ -271,13 +304,22 @@ class PttService : Service() {
         const val ACTION_END_SESSION = "com.nova.gpspro.ptt.END_SESSION"
 
         fun startOrUpdate(ctx: Context) {
+            val app = ctx.applicationContext as? NovaApp
+            if (app != null && app.ptt.state.value.phase != PttPhase.IN_SESSION) {
+                PttDiagnostics.info("PttService", "Skipping startOrUpdate because phase != IN_SESSION")
+                return
+            }
             val i = Intent(ctx, PttService::class.java).apply {
                 action = ACTION_START_OR_UPDATE
             }
             try {
                 ctx.startForegroundService(i)
-            } catch (_: Throwable) {
-                try { ctx.startService(i) } catch (_: Throwable) {}
+            } catch (se: SecurityException) {
+                PttDiagnostics.error("PttService", "SecurityException starting foreground service", se)
+            } catch (ise: IllegalStateException) {
+                PttDiagnostics.warn("PttService", "IllegalStateException starting foreground service (app backgrounded)", ise)
+            } catch (t: Throwable) {
+                PttDiagnostics.error("PttService", "Unexpected error starting foreground service", t)
             }
         }
 
