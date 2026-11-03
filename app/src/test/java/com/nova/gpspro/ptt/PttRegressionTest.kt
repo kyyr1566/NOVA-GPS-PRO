@@ -58,6 +58,12 @@ class PttRegressionTest {
         }
     }
 
+    /**
+     * Wrapper type so a queued `null` group-info answer (group created but credentials not exported
+     * yet) is distinguishable from "no queued behaviour, use the default".
+     */
+    private class GroupInfoAnswer(val creds: P2pDriver.HostedGroupCredentials?)
+
     private class FakeP2pDriver : P2pDriver {
         override var isHardwareSupported: Boolean = true
         var wifiEnabled: Boolean = true
@@ -78,7 +84,7 @@ class PttRegressionTest {
         var currentLinkState: P2pDriver.GroupLinkState? = null
         var hostedCreds: P2pDriver.HostedGroupCredentials? = P2pDriver.HostedGroupCredentials("DIRECT-RM-Nova", "pass987654")
         /** Optional queue of successive `requestGroupInfo` answers (empty => always [hostedCreds]). */
-        val hostedCredsBehaviors = ArrayDeque<P2pDriver.HostedGroupCredentials?>()
+        val hostedCredsBehaviors = ArrayDeque<GroupInfoAnswer>()
         var availablePeers: List<P2pDriver.PeerSnapshot> = emptyList()
         var directCredConnectBehaviors = ArrayDeque<Pair<Boolean, Int>>()
         var macConnectBehaviors = ArrayDeque<Pair<Boolean, Int>>()
@@ -140,7 +146,7 @@ class PttRegressionTest {
         override fun requestHostedGroupCredentials(cb: (P2pDriver.HostedGroupCredentials?) -> Unit) {
             callLog += "requestHostedGroupCredentials"
             val queued = hostedCredsBehaviors.removeFirstOrNull()
-            cb(if (queued != null) queued else hostedCreds)
+            cb(if (queued != null) queued.creds else hostedCreds)
         }
 
         override fun setDnsSdListeners(
@@ -1085,9 +1091,9 @@ class PttRegressionTest {
     fun hostRetriesCredentialReadBeforePublishingAJoinableTxtRecord() {
         val driver = FakeP2pDriver().apply {
             // The first two read-backs happen before wpa_supplicant exported the group config
-            hostedCredsBehaviors.addLast(null)
-            hostedCredsBehaviors.addLast(null)
-            hostedCredsBehaviors.addLast(P2pDriver.HostedGroupCredentials("DIRECT-Rm-1234", "Abc12345678"))
+            hostedCredsBehaviors.addLast(GroupInfoAnswer(null))
+            hostedCredsBehaviors.addLast(GroupInfoAnswer(null))
+            hostedCredsBehaviors.addLast(GroupInfoAnswer(P2pDriver.HostedGroupCredentials("DIRECT-Rm-1234", "Abc12345678")))
         }
         val sched = ManualTaskScheduler()
         val wdm = WifiDirectManager(appCtx = null, customDriver = driver, scheduler = sched)
