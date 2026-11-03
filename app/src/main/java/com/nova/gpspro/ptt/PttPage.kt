@@ -680,7 +680,8 @@ class PttPage(
             diagnosticMessage.isNotBlank() &&
             (errorCode == PttErrorCode.P2P_LINK_FAILED ||
                 errorCode == PttErrorCode.CONNECT_TIMEOUT ||
-                errorCode == PttErrorCode.CONNECTION_REFUSED)
+                errorCode == PttErrorCode.CONNECTION_REFUSED ||
+                errorCode == PttErrorCode.AUTH_FAILED)
         ) {
             "$primaryText\n${act.getString(R.string.ptt_diag_label_fmt, diagnosticMessage.take(96))}"
         } else {

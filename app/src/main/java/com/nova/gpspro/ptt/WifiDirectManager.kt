@@ -40,7 +40,25 @@ data class DiscoveredPttSession(
     val groupOwnerIpHint: String = "",
     val groupNetworkName: String = "",
     val groupPassphrase: String = ""
-)
+) {
+    /**
+     * True only when this record can actually be joined over an EXISTING Wi-Fi Direct group
+     * because the host advertised a valid `DIRECT-...` SSID + WPA2 passphrase pair.
+     * Such a record describes a GROUP, not merely a device, so knowing its P2P MAC address
+     * is not required (Android 12+ refuses `connect()` for MACs the caller never discovered).
+     */
+    val hasDirectGroupCredentials: Boolean
+        get() = WifiDirectManager.isValidDirectGroupSsid(groupNetworkName) &&
+            WifiDirectManager.isValidDirectGroupPassphrase(groupPassphrase)
+
+    /**
+     * A bare Wi-Fi Direct MAC address is useless for the join handshake: Android's framework
+     * requires an in-app peer discovery result, and MAC randomization makes a stale/failed
+     * discovery MAC unroutable. Such records can only be retried after a fresh scan.
+     */
+    val isMacOnlyCandidate: Boolean
+        get() = !hasDirectGroupCredentials && deviceAddress.isNotBlank()
+}
 
 enum class WifiEnvironmentIssue {
     NONE,
@@ -226,19 +244,37 @@ class WifiDirectManager(
         private const val DNS_PHASE_DURATION_MS = 5_000L
         private const val PEER_FALLBACK_DURATION_MS = 3_000L
         private const val GROUP_FORM_TIMEOUT_MS = 9_000L
+        private const val HOST_CREDENTIAL_MAX_ATTEMPTS = 3
 
         // Client P2P radio association windows (Direct SSID/PSK fast path + MAC PBC fallback)
         private const val DIRECT_CRED_LINK_TIMEOUT_MS = 8_000L
         private const val MAC_FALLBACK_LINK_TIMEOUT_MS = 10_000L
+        private const val REJOIN_LINK_TIMEOUT_MS = 8_000L
 
+        // Warm-up joined-group retry window: right after association the framework may still
+        // report groupFormed == false for a moment, so the first re-join failure is not fatal.
+        private const val WARMUP_REJOIN_RETRY_MS = 1_200L
+        private const val WARMUP_REJOIN_BUDGET_MS = 3_500L
+
+        /** Android's own P2P group SSIDs are always `DIRECT-xy<human readable suffix>`. */
         fun isValidDirectGroupSsid(ssid: String): Boolean =
-            ssid.startsWith("DIRECT-") && ssid.length in 9..32
+            ssid.length in 9..32 &&
+                ssid.startsWith("DIRECT-") &&
+                !ssid.contains(' ') &&
+                ssid.any { it.isLetterOrDigit() }
 
         fun isValidDirectGroupPassphrase(psk: String): Boolean =
             psk.length in 8..63
     }
 
     override var listener: PttRadioTransport.Listener? = null
+
+    /**
+     * Optional application callback: "is a client association still pending?".
+     * Prevents a late link poll from re-emitting a stale link event after the join handshake
+     * already advanced the UI (WAITING_APPROVAL / IN_SESSION).
+     */
+    var clientStateObserver: (() -> Boolean)? = null
 
     private val wifiManager: WifiManager? = try {
         appCtx?.applicationContext?.getSystemService(WifiManager::class.java)
@@ -447,6 +483,23 @@ class WifiDirectManager(
         goIp: String,
         onComplete: () -> Unit
     ) {
+        publishGroupCredentialsIntoDnsSd(gen, baseTxt, goIp, attempt = 1, onComplete = onComplete)
+    }
+
+    /**
+     * `requestGroupInfo` can answer with an empty passphrase for a few hundred milliseconds right
+     * after `createGroup` (group created, but wpa_supplicant has not exported the config yet).
+     * Without `gn`/`gp` in the DNS-SD TXT record a client can only attempt a P2P invitation, which a
+     * persistent autonomous group never accepts — the exact "join always times out" symptom.
+     * The credential fetch is therefore retried (bounded) before publishing a credential-less record.
+     */
+    private fun publishGroupCredentialsIntoDnsSd(
+        gen: Int,
+        baseTxt: Map<String, String>,
+        goIp: String,
+        attempt: Int,
+        onComplete: () -> Unit
+    ) {
         if (operationGen.get() != gen) return
         driver.requestHostedGroupCredentials { creds ->
             if (operationGen.get() != gen) return@requestHostedGroupCredentials
@@ -460,7 +513,10 @@ class WifiDirectManager(
             ) {
                 enriched["gn"] = creds.networkName
                 enriched["gp"] = creds.passphrase
-                PttDiagnostics.info("HostStart", "Publishing P2P group credentials in DNS-SD forSSID=${creds.networkName} goIp=$goIp")
+                PttDiagnostics.info(
+                    "HostStart",
+                    "Publishing joinable group identity in DNS-SD: SSID=${creds.networkName} goIp=$goIp (attempt=$attempt)"
+                )
                 driver.clearLocalServices { _, _ ->
                     if (operationGen.get() != gen) return@clearLocalServices
                     driver.addDnsSdLocalService(
@@ -476,7 +532,21 @@ class WifiDirectManager(
                         onComplete()
                     }
                 }
+            } else if (attempt < HOST_CREDENTIAL_MAX_ATTEMPTS) {
+                PttDiagnostics.warn(
+                    "HostStart",
+                    "Group credentials not readable yet (attempt $attempt/$HOST_CREDENTIAL_MAX_ATTEMPTS); retrying in 600ms"
+                )
+                scheduler.postDelayed(600L, Runnable {
+                    if (operationGen.get() == gen) {
+                        publishGroupCredentialsIntoDnsSd(gen, baseTxt, goIp, attempt + 1, onComplete)
+                    }
+                })
             } else {
+                PttDiagnostics.error(
+                    "HostStart",
+                    "Could not read DIRECT SSID/passphrase from the formed group; clients will only be able to attempt a P2P invitation"
+                )
                 driver.discoverPeers { _, _ -> }
                 onComplete()
             }
@@ -1053,15 +1123,22 @@ class WifiDirectManager(
     }
 
     /**
-     * Two-stage smart Wi-Fi Direct client connection:
-     *  • Sets [connectInProgress] BEFORE registering BroadcastReceiver so sticky `groupFormed=false`
-     *    intents NEVER abort the connection prematurely!
-     *  • Stage 1 (Fast Direct Group Join, API 30+): If DNS-SD provided `DIRECT-...` SSID & passphrase,
-     *    joins the Autonomous GO group directly via `WifiP2pConfig.Builder` — bypassing WPS PBC,
-     *    MAC randomization mismatches, and hidden OS invitation popups.
-     *  • Stage 2 (Fallback MAC Connect): If Stage 1 is unavailable or does not form a link within 8s,
-     *    refreshes the P2P peer cache briefly and connects via `deviceAddress` + `WpsInfo.PBC`.
-     *  • Reports [WifiEnvironmentIssue.P2P_LINK_FAILED] if neither radio stage forms a P2P group.
+    /**
+     * Client Wi-Fi Direct association, organised around the two REAL-radio join paths:
+     *
+     *  • Direct group join (preferred) — the host advertised a `DIRECT-...` SSID + WPA2 passphrase
+     *    (DNS-SD `gn`/`gp`). The client joins the ALREADY-EXISTING autonomous group through
+     *    `WifiP2pConfig.Builder().setNetworkName().setPassphrase()`. No WPS PBC, no Group-Owner
+     *    negotiation, no reliance on the host accepting an invitation. This is the only path that
+     *    works reliably on stock Android: a `createGroup()` group is *persistent*, so the host never
+     *    processes invitations and a plain `connect(deviceAddress)` + `WpsInfo.PBC` can only time out
+     *    (exactly the reported field failure: host discovered, join always times out, host never
+     *    shows an approval card).
+     *  • P2P invitation (only when no credentials exist) — re-scan the peer table once and invite the
+     *    peer; any failure is reported with its true P2P reason code instead of a generic timeout.
+     *
+     * `connectInProgress` is set BEFORE the receiver is registered so sticky `groupFormed=false`
+     * intents can never abort the attempt, and every terminal path reports exactly one issue.
      */
     override fun connectToSession(
         session: DiscoveredPttSession,
@@ -1070,11 +1147,11 @@ class WifiDirectManager(
     ) {
         val env = diagnoseEnvironment()
         if (env != WifiEnvironmentIssue.NONE) {
-            onFailed(env, "Connect pre-flight failed: $env")
+            onFailed(env, preflightDiagnostic(env))
             return
         }
         if (!driver.ensureInitialized()) {
-            onFailed(WifiEnvironmentIssue.P2P_UNSUPPORTED, "Channel initialization failed")
+            onFailed(WifiEnvironmentIssue.P2P_UNSUPPORTED, "WifiP2pManager channel initialization returned null")
             return
         }
 
@@ -1082,18 +1159,17 @@ class WifiDirectManager(
         val gen = operationGen.incrementAndGet()
         activeTargetIpHint = session.groupOwnerIpHint
         clientLinkEstablished.set(false)
-        // Must be true BEFORE ensureReceiverRegistered() so sticky broadcast never triggers disconnect!
         connectInProgress.set(true)
         ensureReceiverRegistered()
 
         driver.requestLinkState { existingLink ->
             if (operationGen.get() != gen) return@requestLinkState
             if (existingLink != null && existingLink.groupFormed) {
+                val resolvedGoIp = existingLink.groupOwnerIp?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+                    ?: session.groupOwnerIpHint.takeIf { it.isNotBlank() && it != "0.0.0.0" }
                 val sameTargetGroup = session.groupNetworkName.isBlank() ||
                     existingLink.networkName.isBlank() ||
                     existingLink.networkName == session.groupNetworkName
-                val resolvedGoIp = existingLink.groupOwnerIp?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
-                    ?: session.groupOwnerIpHint.takeIf { it.isNotBlank() }
                 if (!existingLink.isGroupOwner && sameTargetGroup && !resolvedGoIp.isNullOrBlank()) {
                     PttDiagnostics.info("Connect", "Reusing active P2P client link GO=$resolvedGoIp")
                     connectInProgress.set(false)
@@ -1106,17 +1182,26 @@ class WifiDirectManager(
                 PttDiagnostics.info("Connect", "Removing stale P2P group before joining target host")
                 driver.removeExistingGroupIfAny {
                     if (operationGen.get() == gen) {
-                        beginClientAssociationStages(gen, session, onInitiated, onFailed)
+                        beginClientAssociation(gen, session, onInitiated, onFailed)
                     }
                 }
                 return@requestLinkState
             }
 
-            beginClientAssociationStages(gen, session, onInitiated, onFailed)
+            beginClientAssociation(gen, session, onInitiated, onFailed)
         }
     }
 
-    private fun beginClientAssociationStages(
+    /** Accurate pre-flight diagnostics — never a generic "timed out" for a configuration problem. */
+    private fun preflightDiagnostic(issue: WifiEnvironmentIssue): String = when (issue) {
+        WifiEnvironmentIssue.P2P_UNSUPPORTED -> "Wi-Fi Direct is not supported by this device's hardware"
+        WifiEnvironmentIssue.WIFI_DISABLED -> "Wi-Fi is switched off"
+        WifiEnvironmentIssue.LOCATION_TOGGLE_OFF -> "System Location toggle is required on Android 11/12 for P2P"
+        WifiEnvironmentIssue.MISSING_PERMISSION -> "Nearby devices / Location permission not granted"
+        else -> "Pre-flight check failed: $issue"
+    }
+
+    private fun beginClientAssociation(
         gen: Int,
         session: DiscoveredPttSession,
         onInitiated: () -> Unit,
@@ -1129,43 +1214,52 @@ class WifiDirectManager(
             }
         }
 
-        val hasDirectCreds = isValidDirectGroupSsid(session.groupNetworkName) &&
-            isValidDirectGroupPassphrase(session.groupPassphrase)
-
-        if (hasDirectCreds) {
-            PttDiagnostics.info(
-                "Connect",
-                "Stage 1: Direct group join via SSID=${session.groupNetworkName} (target=${session.deviceAddress})"
-            )
-            driver.connectWithGroupCredentials(session.groupNetworkName, session.groupPassphrase) { ok, reason ->
-                if (operationGen.get() != gen || !connectInProgress.get()) return@connectWithGroupCredentials
-                if (ok) {
-                    notifyOnce()
-                    startConnectLinkPolling(gen)
-                    armConnectStageTimeout(DIRECT_CRED_LINK_TIMEOUT_MS) {
-                        if (operationGen.get() == gen && connectInProgress.get()) {
-                            PttDiagnostics.warn("Connect", "Stage 1 Direct SSID join timed out; falling back to Stage 2 MAC connect")
-                            try { driver.cancelConnect() } catch (_: Throwable) {}
-                            scheduler.postDelayed(250L, Runnable {
-                                if (operationGen.get() == gen && connectInProgress.get()) {
-                                    runStage2MacConnect(gen, session.deviceAddress, notifyOnce, onFailed)
-                                }
-                            })
-                        }
-                    }
-                } else {
-                    PttDiagnostics.warn(
-                        "Connect",
-                        "Stage 1 Direct SSID connect rejected (${PttDiagnostics.p2pReasonName(reason)}); switching immediately to Stage 2 MAC connect"
-                    )
-                    runStage2MacConnect(gen, session.deviceAddress, notifyOnce, onFailed)
-                }
-            }
-        } else {
+        if (!session.hasDirectGroupCredentials) {
+            // The host was discovered as a bare P2P peer (peer-table fallback) without a
+            // `DIRECT-...` group identity: the only remaining option is a classic invitation.
+            PttDiagnostics.info("Connect", "No DIRECT group credentials advertised; using P2P invitation")
             runStage2MacConnect(gen, session.deviceAddress, notifyOnce, onFailed)
+            return
+        }
+
+        PttDiagnostics.info(
+            "Connect",
+            "Stage 1: joining existing DIRECT group '${session.groupNetworkName}' (goip=${session.groupOwnerIpHint})"
+        )
+        driver.connectWithGroupCredentials(session.groupNetworkName, session.groupPassphrase) { ok, reason ->
+            if (operationGen.get() != gen || !connectInProgress.get()) return@connectWithGroupCredentials
+            if (ok) {
+                notifyOnce()
+                startConnectLinkPolling(gen)
+                armConnectStageTimeout(DIRECT_CRED_LINK_TIMEOUT_MS) {
+                    if (operationGen.get() == gen && connectInProgress.get()) {
+                        PttDiagnostics.warn(
+                            "Connect",
+                            "Stage 1 group join did not form a link in ${DIRECT_CRED_LINK_TIMEOUT_MS}ms; trying MAC invitation as a last resort"
+                        )
+                        try { driver.cancelConnect() } catch (_: Throwable) {}
+                        scheduler.postDelayed(250L, Runnable {
+                            if (operationGen.get() == gen && connectInProgress.get()) {
+                                runStage2MacConnect(gen, session.deviceAddress, notifyOnce, onFailed)
+                            }
+                        })
+                    }
+                }
+            } else {
+                connectInProgress.set(false)
+                val diag = "[P2P-Group] Direct group join rejected by the framework: " +
+                    PttDiagnostics.p2pReasonName(reason) +
+                    " (ssid='${session.groupNetworkName}')"
+                PttDiagnostics.error("Connect", diag)
+                onFailed(WifiEnvironmentIssue.P2P_LINK_FAILED, diag)
+            }
         }
     }
 
+    /**
+     * MAC invitation stage. Only meaningful when the peer is genuinely part of the framework's
+     * discovered-peer table; otherwise we report the real cause instead of burning another timeout.
+     */
     private fun runStage2MacConnect(
         gen: Int,
         deviceAddress: String,
@@ -1175,10 +1269,10 @@ class WifiDirectManager(
         if (operationGen.get() != gen || !connectInProgress.get()) return
         if (deviceAddress.isBlank()) {
             connectInProgress.set(false)
-            onFailed(WifiEnvironmentIssue.P2P_LINK_FAILED, "Target P2P device address is blank")
+            onFailed(WifiEnvironmentIssue.P2P_LINK_FAILED, "[P2P-MAC] The host advertised no joinable Wi-Fi Direct identity")
             return
         }
-        PttDiagnostics.info("Connect", "Stage 2: P2P MAC connect to $deviceAddress")
+        PttDiagnostics.info("Connect", "Stage 2: P2P MAC invitation to $deviceAddress")
         initiateMacConnectWithPeerRefreshRetry(gen, deviceAddress, attempt = 1, notifyInitiatedOnce = notifyInitiatedOnce, onFailed = onFailed)
     }
 
@@ -1202,7 +1296,12 @@ class WifiDirectManager(
                         connectPollRunnable = null
                         try { driver.cancelConnect() } catch (_: Throwable) {}
                         val issue = if (!driver.isWifiEnabled()) WifiEnvironmentIssue.WIFI_DISABLED else WifiEnvironmentIssue.P2P_LINK_FAILED
-                        val diag = "[P2P-Link] Timed out waiting for groupFormed with $deviceAddress"
+                        val diag = if (!driver.isWifiEnabled()) {
+                            "Wi-Fi was switched off while joining the host"
+                        } else {
+                            "[P2P-MAC] Invitation to $deviceAddress was accepted but no group was formed " +
+                                "(${MAC_FALLBACK_LINK_TIMEOUT_MS}ms) — the host's group is not accepting invitations"
+                        }
                         PttDiagnostics.error("Connect", diag)
                         onFailed(issue, diag)
                     }
@@ -1223,11 +1322,27 @@ class WifiDirectManager(
             } else {
                 connectInProgress.set(false)
                 val issue = classifyP2pFailure(reason, WifiEnvironmentIssue.P2P_LINK_FAILED)
-                val diag = "[P2P-Link] WifiP2pManager.connect failed: ${PttDiagnostics.p2pReasonName(reason)}"
+                val diag = "[P2P-MAC] WifiP2pManager.connect failed for $deviceAddress: " +
+                    PttDiagnostics.p2pReasonName(reason)
                 PttDiagnostics.error("Connect", diag)
                 onFailed(issue, diag)
             }
         }
+    }
+
+    private fun onClientAssociationLost(
+        gen: Int,
+        onFailed: (WifiEnvironmentIssue, String) -> Unit,
+        diagnostic: String
+    ) {
+        if (operationGen.get() != gen) return
+        connectInProgress.set(false)
+        connectPollRunnable?.let { scheduler.remove(it) }
+        connectPollRunnable = null
+        try { driver.cancelConnect() } catch (_: Throwable) {}
+        val issue = if (!driver.isWifiEnabled()) WifiEnvironmentIssue.WIFI_DISABLED else WifiEnvironmentIssue.P2P_LINK_FAILED
+        PttDiagnostics.error("Connect", diagnostic)
+        onFailed(issue, diagnostic)
     }
 
     private fun armConnectStageTimeout(timeoutMs: Long, onTimeout: () -> Unit) {
@@ -1237,17 +1352,38 @@ class WifiDirectManager(
         scheduler.postDelayed(timeoutMs, r)
     }
 
+    /**
+     * Link confirmation loop for the client:
+     *  1. If the Join/Approve handshake already completed (the UI is no longer CONNECTING) we must
+     *     NOT overwrite that state — we only make sure the poll stops.
+     *  2. A formed group is reported immediately; if the GO address is still 0.0.0.0 the group is
+     *     nevertheless considered up and TCP dialling is attempted against every known hint.
+     */
     private fun startConnectLinkPolling(gen: Int) {
         connectPollRunnable?.let { scheduler.remove(it) }
         val poll = object : Runnable {
             override fun run() {
-                if (operationGen.get() != gen || !connectInProgress.get()) return
+                if (operationGen.get() != gen) return
+                if (!clientConnectionPending()) {
+                    // Link was already consumed by the join handshake (or the attempt was cancelled).
+                    connectPollRunnable = null
+                    return
+                }
                 driver.requestLinkState { st ->
-                    if (operationGen.get() != gen || !connectInProgress.get()) return@requestLinkState
-                    val goIp = st?.groupOwnerIp?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
-                        ?: if (st?.groupFormed == true && !st.isGroupOwner) activeTargetIpHint.takeIf { it.isNotBlank() } else null
-                    if (st != null && st.groupFormed && !goIp.isNullOrBlank()) {
-                        onGroupLinkObserved(st.isGroupOwner, goIp)
+                    if (operationGen.get() != gen || !clientConnectionPending()) return@requestLinkState
+                    val formed = st?.groupFormed == true
+                    val reportedGoIp = st?.groupOwnerIp?.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+                    val goIp = reportedGoIp
+                        ?: if (formed && st?.isGroupOwner != true) {
+                            activeTargetIpHint.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+                        } else null
+                    if (formed) {
+                        if (st?.isGroupOwner == true) {
+                            // Defensive: the invitation turned us into the Group Owner.
+                            onGroupLinkObserved(true, goIp ?: resolveLocalP2pInterfaceIp() ?: "192.168.49.1")
+                        } else {
+                            onGroupLinkObserved(false, goIp ?: "")
+                        }
                     } else {
                         scheduler.postDelayed(400L, this)
                     }
@@ -1256,6 +1392,21 @@ class WifiDirectManager(
         }
         connectPollRunnable = poll
         scheduler.postDelayed(350L, poll)
+    }
+
+    /**
+     * True while a client association is still being awaited. The authoritative signal is the
+     * application state (still CONNECTING), so the poll can never fire a second, stale link event
+     * after the TCP join handshake has already moved the UI to WAITING_APPROVAL / IN_SESSION.
+     */
+    private fun clientConnectionPending(): Boolean {
+        if (!connectInProgress.get()) return false
+        val observer = clientStateObserver ?: return true
+        return try {
+            observer()
+        } catch (_: Throwable) {
+            true
+        }
     }
 
     private fun onGroupLinkObserved(isGroupOwner: Boolean, goIp: String) {

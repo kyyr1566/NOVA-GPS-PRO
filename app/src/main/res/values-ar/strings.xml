@@ -366,6 +366,14 @@
     <string name="ptt_hotspot_ssid_fmt">اسم الشبكة (SSID): %1$s</string>
     <string name="ptt_hotspot_pass_fmt">كلمة المرور: %1$s</string>
     <string name="ptt_hotspot_how_to_join">طريقة انضمام الهاتف الثاني:\n1) من إعدادات Wi-Fi في الهاتف الثاني، اتصل بالشبكة أعلاه وأدخل كلمة المرور.\n2) افتح شاشة اللاسلكي في الهاتف الثاني واضغط «انضمام لنقطة محلية».\n3) أدخل رمز القناة ثم اقبل طلب الانضمام على هذا الهاتف.</string>
+    <string name="ptt_diag_p2p_group_join_failed">ربط Wi-Fi Direct: فشل الانضمام إلى مجموعة المضيف (%1$s).</string>
+    <string name="ptt_diag_p2p_invite_failed">ربط Wi-Fi Direct: فشل إرسال دعوة الاتصال للجهاز (%1$s).</string>
+    <string name="ptt_diag_p2p_no_group_identity">ربط Wi-Fi Direct: المضيف لم ينشر مجموعة قابلة للانضمام. أعد البحث ثم حاول مجدداً.</string>
+    <string name="ptt_diag_p2p_disconnected">انقطع ربط Wi-Fi Direct قبل اكتمال مصافحة الانضمام.</string>
+    <string name="ptt_diag_channel_code_rejected">الربط ناجح والمصافحة ناجحة — المضيف رفض رمز القناة.</string>
+    <string name="ptt_diag_tcp_dial_failed">الربط ناجح لكن تعذّر الوصول إلى منفذ تحكم المضيف (%1$s).</string>
+    <string name="ptt_diag_wifi_off_mid_join">تم إيقاف Wi-Fi أثناء محاولة الانضمام.</string>
+    <string name="ptt_diag_link_ok_no_handshake">ربط Wi-Fi Direct تم، لكن لم تصل مصافحة من المضيف.</string>
     <string name="ptt_err_p2p_link_failed">تعذر إتمام الربط المباشر عبر Wi-Fi Direct مع الهاتف المضيف. أعد المحاولة أو أنشئ الجلسة بوضع «نقطة اتصال محلية».</string>
     <string name="ptt_err_approval_timeout">انتهت مهلة انتظار موافقة المضيف على طلب الانضمام.</string>
     <string name="ptt_connecting_p2p_link">جارٍ إقامة رابط Wi-Fi Direct مع المضيف…</string>

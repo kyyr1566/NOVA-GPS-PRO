@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import com.nova.gpspro.R
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -179,6 +180,8 @@ class PttRepository(
     private val audioEngine: PttAudioController = AndroidAudioControllerAdapter(appCtx!!),
     private val uiPoster: (Runnable) -> Unit = { r -> Handler(Looper.getMainLooper()).post(r) },
     private val clockMs: () -> Long = { SystemClock.elapsedRealtime() },
+    /** Localized UI strings for actionable diagnostics; null on the JVM (unit tests). */
+    private val uiText: ((Int) -> String)? = null,
     private val preferredHostTcpPort: Int = PttProtocol.DEFAULT_TCP_PORT,
     private val preferredHostUdpPort: Int = PttProtocol.DEFAULT_UDP_PORT
 ) {
@@ -188,6 +191,33 @@ class PttRepository(
         private const val P2P_RADIO_LINK_TIMEOUT_MS = 22_000L
         private const val TCP_HANDSHAKE_TIMEOUT_MS = 18_000L
         private const val APPROVAL_TIMEOUT_MS = 38_000L
+    }
+
+    /**
+     * Turns a transport-level link failure into an actionable, localized message while keeping the
+     * raw framework reason code (e.g. `P2P_BUSY(2)`, `P2P_UNSUPPORTED(1)`) appended, so a real
+     * device log immediately distinguishes "link/subnet problem" from "wrong channel code".
+     */
+    internal fun localizeLinkFailure(raw: String): String {
+        val shortReason = Regex("""P2P_[A-Z_]+\(\d+\)|CODE\(\d+\)""").find(raw)?.value
+            ?: raw.substringAfterLast(':').trim().take(48)
+        val message = when {
+            raw.contains("no DIRECT group credentials", ignoreCase = true) ||
+                raw.contains("no joinable Wi-Fi Direct identity", ignoreCase = true) ->
+                uiText?.invoke(R.string.ptt_diag_p2p_no_group_identity)
+            raw.contains("[P2P-MAC] connect failed", ignoreCase = true) ->
+                uiText?.invoke(R.string.ptt_diag_p2p_invite_failed)
+            raw.contains("[P2P-MAC]", ignoreCase = true) ->
+                uiText?.invoke(R.string.ptt_diag_p2p_invite_failed)
+            raw.contains("[P2P-Group]", ignoreCase = true) ->
+                uiText?.invoke(R.string.ptt_diag_p2p_group_join_failed)
+            else -> null
+        }
+        return if (message != null) {
+            if (shortReason.isBlank()) message else message.format(shortReason)
+        } else {
+            raw
+        }
     }
 
     private class DefaultPttServiceBridge(private val ctx: Context) : PttServiceBridge {
@@ -334,6 +364,12 @@ class PttRepository(
     }
 
     init {
+        // Lets the transport stop its link poll the moment the join handshake takes over the UI,
+        // so a late poll can never re-emit a stale link event or leak a second TCP dial.
+        (wifiDirect as? WifiDirectManager)?.clientStateObserver = {
+            val cur = _state.value
+            cur.phase == PttPhase.CONNECTING && !cur.isHost
+        }
         wifiDirect.listener = object : PttRadioTransport.Listener {
             override fun onSessionsDiscovered(sessions: List<DiscoveredPttSession>) {
                 updateState { cur ->
@@ -370,10 +406,17 @@ class PttRepository(
                 val cur = _state.value
                 if (cur.phase == PttPhase.CONNECTING && !cur.isHost) {
                     val port = pendingTargetSession?.tcpPort ?: PttProtocol.DEFAULT_TCP_PORT
-                    PttDiagnostics.info("ClientJoin", "P2P link ready -> dialing TCP control $groupOwnerIp:$port")
+                    val dialIp = groupOwnerIp.takeIf { it.isNotBlank() && it != "0.0.0.0" }
+                        ?: pendingTargetSession?.groupOwnerIpHint.orEmpty()
+                    PttDiagnostics.info(
+                        "ClientJoin",
+                        "Wi-Fi Direct link up -> dialing TCP control $dialIp:$port (hint='$groupOwnerIp')"
+                    )
                     updateState { it.copy(connectingRadioLinked = true) }
                     armConnectTimeout(TCP_HANDSHAKE_TIMEOUT_MS, timeoutError = PttErrorCode.CONNECT_TIMEOUT)
-                    dialHostControlChannel(groupOwnerIp, port)
+                    // An empty value means "GO address not reported yet": the dialler then tries the
+                    // advertised hint, 192.168.49.1 and the local p2p subnet instead of failing here.
+                    dialHostControlChannel(dialIp, port)
                 }
             }
 
@@ -391,7 +434,12 @@ class PttRepository(
                         showEndedBanner = wasEstablished,
                         sendGoodbye = false,
                         postError = err,
-                        diagnostic = "[P2P-Link] Radio link disconnected"
+                        diagnostic = if (wasEstablished) {
+                            "[P2P-Link] Radio link disconnected"
+                        } else {
+                            uiText?.invoke(R.string.ptt_diag_p2p_disconnected)
+                                ?: "[P2P-Link] Radio link disconnected"
+                        }
                     )
                 }
             }
@@ -893,7 +941,12 @@ class PttRepository(
             onInitiated = { /* P2P connection broadcast / link poll will invoke dialHostControlChannel */ },
             onFailed = { issue, diag ->
                 val mapped = mapWifiIssue(issue)
-                teardownSession(showEndedBanner = false, sendGoodbye = false, postError = mapped, diagnostic = diag)
+                teardownSession(
+                    showEndedBanner = false,
+                    sendGoodbye = false,
+                    postError = mapped,
+                    diagnostic = localizeLinkFailure(diag)
+                )
             }
         )
         return true
@@ -1508,8 +1561,12 @@ class PttRepository(
                     if (hostIp.isNotBlank() && hostIp != "0.0.0.0") add(hostIp)
                     val hint = pendingTargetSession?.groupOwnerIpHint.orEmpty()
                     if (hint.isNotBlank() && hint != "0.0.0.0") add(hint)
-                    if (!pendingJoinViaHotspot && hostIp != "127.0.0.1" && hostIp != "localhost") {
+                    if (!pendingJoinViaHotspot) {
+                        // Wi-Fi Direct always uses 192.168.49.1 as the Group Owner address on Android;
+                        // add it (plus the first IPv4 address of this device on the p2p interface) so a
+                        // missing `groupOwnerAddress` from the framework never blocks the TCP handshake.
                         add("192.168.49.1")
+                        findP2pInterfaceLocalAddress()?.let { add(it) }
                     }
                 }.toList()
 
@@ -1562,13 +1619,14 @@ class PttRepository(
                 sock = connected ?: run {
                     val errCode = when {
                         !wifiDirect.isWifiEnabled() -> PttErrorCode.WIFI_DISABLED
-                        lastConnectErr is ConnectException && pendingTargetSession?.discoveredViaFallback == true ->
-                            PttErrorCode.PROTOCOL_INCOMPATIBLE
+                        pendingTargetSession?.discoveredViaFallback == true -> PttErrorCode.PROTOCOL_INCOMPATIBLE
                         lastConnectErr is ConnectException -> PttErrorCode.CONNECTION_REFUSED
                         else -> PttErrorCode.CONNECT_TIMEOUT
                     }
-                    val diag = "[TCP-Dial $hostIp:$tcpPort] ${lastConnectErr?.javaClass?.simpleName ?: "Timeout"}: ${lastConnectErr?.message.orEmpty()}"
-                    PttDiagnostics.error("ClientDial", diag, lastConnectErr)
+                    val rawDiag = "${lastConnectErr?.javaClass?.simpleName ?: "Timeout"}: ${lastConnectErr?.message.orEmpty()}"
+                    val diag = uiText?.invoke(R.string.ptt_diag_tcp_dial_failed)?.format(rawDiag.take(48))
+                        ?: "[TCP-Dial $hostIp:$tcpPort] $rawDiag"
+                    PttDiagnostics.error("ClientDial", "[TCP-Dial $hostIp:$tcpPort] $rawDiag", lastConnectErr)
                     teardownSession(
                         showEndedBanner = false,
                         sendGoodbye = false,
@@ -1670,8 +1728,17 @@ class PttRepository(
                             PttRejectReason.PROTOCOL_MISMATCH -> PttErrorCode.PROTOCOL_INCOMPATIBLE
                             else -> PttErrorCode.REJECTED_BY_HOST
                         }
+                        val diag = when (err) {
+                            // Radio + TCP + protocol all succeeded: the ONLY failing element is the code.
+                            PttErrorCode.AUTH_FAILED ->
+                                uiText?.invoke(R.string.ptt_diag_channel_code_rejected)
+                                    ?: "[ChannelAuth] Wi-Fi Direct link and TCP reached the host, but the channel code did not match"
+                            PttErrorCode.PROTOCOL_INCOMPATIBLE ->
+                                "[Protocol] Host runs a different Walkie-Talkie protocol version"
+                            else -> "[Join] Host rejected the request (code=${nextFrame.reasonCode})"
+                        }
                         PttDiagnostics.warn("ClientDial", "JoinRejected by host: reason=${nextFrame.reasonCode} -> $err")
-                        teardownSession(showEndedBanner = false, sendGoodbye = false, postError = err)
+                        teardownSession(showEndedBanner = false, sendGoodbye = false, postError = err, diagnostic = diag)
                         return@execute
                     }
 
@@ -1760,6 +1827,27 @@ class PttRepository(
                     teardownSession(showEndedBanner = false, sendGoodbye = false, postError = err, diagnostic = t.message.orEmpty())
                 }
             }
+        }
+    }
+
+    /** First non-loopback IPv4 of the Wi-Fi Direct interface (p2p0 / p2p-wlan0-*), if any. */
+    private fun findP2pInterfaceLocalAddress(): String? {
+        return try {
+            val ifaces = NetworkInterface.getNetworkInterfaces() ?: return null
+            while (ifaces.hasMoreElements()) {
+                val nif = ifaces.nextElement()
+                val name = nif.name?.lowercase().orEmpty()
+                if (!nif.isUp || nif.isLoopback) continue
+                if (!name.startsWith("p2p")) continue
+                val addrs = nif.inetAddresses
+                while (addrs.hasMoreElements()) {
+                    val a = addrs.nextElement()
+                    if (a is Inet4Address && !a.isLoopbackAddress) return a.hostAddress
+                }
+            }
+            null
+        } catch (_: Throwable) {
+            null
         }
     }
 

@@ -25,7 +25,10 @@ class NovaApp : Application() {
         destinations = DestinationRepository(this)
         gps = LocationEngine(this)
         navigation = NavigationEngine(this, gps, destinations)
-        ptt = PttRepository(this)
+        ptt = PttRepository(
+            appCtx = this,
+            uiText = { resId -> getString(resId) }
+        )
     }
 
     fun clearAllData() {

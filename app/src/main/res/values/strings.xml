@@ -369,6 +369,14 @@
     <string name="ptt_hotspot_ssid_fmt">Network Name (SSID): %1$s</string>
     <string name="ptt_hotspot_pass_fmt">Password: %1$s</string>
     <string name="ptt_hotspot_how_to_join">How Phone 2 joins:\n1) In Phone 2 Wi-Fi Settings, connect to the SSID &amp; Password above.\n2) Open Walkie-Talkie on Phone 2 and tap \"Join Hotspot\".\n3) Enter the Channel Code and accept the request on this phone.</string>
+    <string name="ptt_diag_p2p_group_join_failed">Wi-Fi Direct link: joining the host group failed (%1$s).</string>
+    <string name="ptt_diag_p2p_invite_failed">Wi-Fi Direct link: device invitation failed (%1$s).</string>
+    <string name="ptt_diag_p2p_no_group_identity">Wi-Fi Direct link: the host did not publish a joinable group. Search again and retry.</string>
+    <string name="ptt_diag_p2p_disconnected">Wi-Fi Direct link dropped before the join handshake completed.</string>
+    <string name="ptt_diag_channel_code_rejected">Link OK, TCP handshake OK — the host rejected the channel code.</string>
+    <string name="ptt_diag_tcp_dial_failed">Link OK, but the host control port could not be reached (%1$s).</string>
+    <string name="ptt_diag_wifi_off_mid_join">Wi-Fi was switched off during the join.</string>
+    <string name="ptt_diag_link_ok_no_handshake">Wi-Fi Direct link up, but no host handshake was received.</string>
     <string name="ptt_err_p2p_link_failed">Could not establish the Wi-Fi Direct link with the host. Retry or create the session using \"Local Hotspot\" mode.</string>
     <string name="ptt_err_approval_timeout">Timed out waiting for the host to approve your join request.</string>
     <string name="ptt_connecting_p2p_link">Linking Wi-Fi Direct radio with host…</string>

@@ -77,6 +77,8 @@ class PttRegressionTest {
 
         var currentLinkState: P2pDriver.GroupLinkState? = null
         var hostedCreds: P2pDriver.HostedGroupCredentials? = P2pDriver.HostedGroupCredentials("DIRECT-RM-Nova", "pass987654")
+        /** Optional queue of successive `requestGroupInfo` answers (empty => always [hostedCreds]). */
+        val hostedCredsBehaviors = ArrayDeque<P2pDriver.HostedGroupCredentials?>()
         var availablePeers: List<P2pDriver.PeerSnapshot> = emptyList()
         var directCredConnectBehaviors = ArrayDeque<Pair<Boolean, Int>>()
         var macConnectBehaviors = ArrayDeque<Pair<Boolean, Int>>()
@@ -137,7 +139,8 @@ class PttRegressionTest {
 
         override fun requestHostedGroupCredentials(cb: (P2pDriver.HostedGroupCredentials?) -> Unit) {
             callLog += "requestHostedGroupCredentials"
-            cb(hostedCreds)
+            val queued = hostedCredsBehaviors.removeFirstOrNull()
+            cb(if (queued != null) queued else hostedCreds)
         }
 
         override fun setDnsSdListeners(
@@ -957,5 +960,159 @@ class PttRegressionTest {
 
         hsHostRepo.endSessionByUser()
         assertTrue(waitUntil { hsGuestRepo.state.value.phase == PttPhase.DISCONNECTED })
+    }
+        hsHostRepo.endSessionByUser()
+        assertTrue(waitUntil { hsGuestRepo.state.value.phase == PttPhase.DISCONNECTED })
+    }
+
+    // =========================================================================
+    // FIELD REPORT (2 real phones): host "realme 11" IS discovered, but joining always
+    // ends in a timeout and the host never shows an approval card.
+    // Root cause: the client fell back to a MAC invitation (`connect()` + WPS PBC) against a
+    // PERSISTENT autonomous group, which never accepts invitations -> guaranteed timeout.
+    // These tests pin the corrected association matrix.
+    // =========================================================================
+
+    private fun recordLinkEvents(transport: WifiDirectManager): MutableList<String> {
+        val events = CopyOnWriteArrayList<String>()
+        transport.listener = object : PttRadioTransport.Listener {
+            override fun onSessionsDiscovered(sessions: List<DiscoveredPttSession>) {}
+            override fun onDiscoveryFinishedEmpty() {}
+            override fun onP2pLinkEstablished(isGroupOwner: Boolean, groupOwnerIp: String) { events += groupOwnerIp }
+            override fun onP2pLinkDisconnected() {}
+            override fun onLocalHotspotStarted(ssid: String, passphrase: String) {}
+            override fun onTransportFailure(issue: WifiEnvironmentIssue, diagnostic: String) {}
+        }
+        return events
+    }
+
+    @Test
+    fun joinWithAdvertisedGroupCredentialsJoinsTheGroupAndNeverUsesMacInvitation() {
+        val driver = FakeP2pDriver()
+        val sched = ManualTaskScheduler()
+        val wdm = WifiDirectManager(appCtx = null, customDriver = driver, scheduler = sched)
+        val links = recordLinkEvents(wdm)
+
+        val session = DiscoveredPttSession(
+            deviceAddress = "aa:bb:cc:dd:ee:ff",
+            sessionId = "SESS77",
+            hostName = "realme 11",
+            deviceName = "realme 11",
+            tcpPort = 49320,
+            protocolVersion = PttProtocol.PROTOCOL_VERSION,
+            lastSeenMs = 1L,
+            groupOwnerIpHint = "192.168.49.1",
+            groupNetworkName = "DIRECT-Rm-Phone",
+            groupPassphrase = "s3cret-pass"
+        )
+        assertTrue("Credentials from DNS-SD must be treated as joinable", session.hasDirectGroupCredentials)
+
+        wdm.connectToSession(session, onInitiated = {}, onFailed = { i, d -> fail("unexpected failure $i: $d") })
+
+        assertTrue(
+            "Must join the existing group by SSID/PSK",
+            driver.callLog.contains("connectWithGroupCredentials(DIRECT-Rm-Phone)")
+        )
+        assertFalse(
+            "Must NOT use a MAC invitation when a joinable group identity is known",
+            driver.callLog.any { it.startsWith("connect(") }
+        )
+        driver.currentLinkState = P2pDriver.GroupLinkState(true, false, "192.168.49.1", "DIRECT-Rm-Phone")
+        sched.advanceBy(500L)
+        assertEquals(listOf("192.168.49.1"), links.toList())
+        wdm.teardownRadio()
+    }
+
+    @Test
+    fun peerOnlyCandidateReportsTheRealFrameworkReasonInsteadOfASilentTimeout() {
+        val driver = FakeP2pDriver().apply {
+            // Android reports P2P_UNSUPPORTED / BUSY style failure codes when a MAC is no longer
+            // in the discovered-peer table -- this must reach the UI verbatim.
+            macConnectBehaviors.addLast(false to WifiDirectManager.REASON_P2P_UNSUPPORTED)
+        }
+        val sched = ManualTaskScheduler()
+        val wdm = WifiDirectManager(appCtx = null, customDriver = driver, scheduler = sched)
+        recordLinkEvents(wdm)
+
+        val peerOnly = DiscoveredPttSession(
+            deviceAddress = "aa:bb:cc:dd:ee:ff",
+            sessionId = "peer_aabbccddeeff",
+            hostName = "realme 11",
+            deviceName = "realme 11",
+            tcpPort = PttProtocol.DEFAULT_TCP_PORT,
+            protocolVersion = PttProtocol.PROTOCOL_VERSION,
+            lastSeenMs = 1L,
+            discoveredViaFallback = true
+        )
+        assertFalse(peerOnly.hasDirectGroupCredentials)
+
+        var issue: WifiEnvironmentIssue? = null
+        var diag = ""
+        wdm.connectToSession(peerOnly, onInitiated = {}, onFailed = { i, d -> issue = i; diag = d })
+
+        assertTrue("Peer-only candidate must still attempt the invitation path", driver.callLog.contains("connect(aa:bb:cc:dd:ee:ff)"))
+        assertEquals(WifiEnvironmentIssue.P2P_UNSUPPORTED, issue)
+        assertTrue("Diagnostic must name the MAC invitation stage, got: $diag", diag.startsWith("[P2P-MAC]"))
+        assertTrue("Diagnostic must carry the framework reason code, got: $diag", diag.contains("P2P_UNSUPPORTED(1)"))
+        wdm.teardownRadio()
+    }
+
+    @Test
+    fun directGroupJoinRejectionSurfacesFrameworkReasonImmediately() {
+        val driver = FakeP2pDriver().apply {
+            directCredConnectBehaviors.addLast(false to WifiDirectManager.REASON_BUSY)
+        }
+        val wdm = WifiDirectManager(appCtx = null, customDriver = driver, scheduler = ManualTaskScheduler())
+        recordLinkEvents(wdm)
+
+        var issue: WifiEnvironmentIssue? = null
+        var diag = ""
+        wdm.connectToSession(
+            DiscoveredPttSession(
+                deviceAddress = "aa:bb:cc:dd:ee:01",
+                sessionId = "S1", hostName = "H", deviceName = "H", tcpPort = 49320,
+                protocolVersion = PttProtocol.PROTOCOL_VERSION, lastSeenMs = 0L,
+                groupOwnerIpHint = "192.168.49.1",
+                groupNetworkName = "DIRECT-Host-X",
+                groupPassphrase = "pass123456"
+            ),
+            onInitiated = {},
+            onFailed = { i, d -> issue = i; diag = d }
+        )
+        assertEquals(WifiEnvironmentIssue.P2P_LINK_FAILED, issue)
+        assertTrue("Must surface P2P_BUSY(2) from the framework, got: $diag", diag.contains("P2P_BUSY(2)"))
+        wdm.teardownRadio()
+    }
+
+    @Test
+    fun hostRetriesCredentialReadBeforePublishingAJoinableTxtRecord() {
+        val driver = FakeP2pDriver().apply {
+            // The first two read-backs happen before wpa_supplicant exported the group config
+            hostedCredsBehaviors.addLast(null)
+            hostedCredsBehaviors.addLast(null)
+            hostedCredsBehaviors.addLast(P2pDriver.HostedGroupCredentials("DIRECT-Rm-1234", "Abc12345678"))
+        }
+        val sched = ManualTaskScheduler()
+        val wdm = WifiDirectManager(appCtx = null, customDriver = driver, scheduler = sched)
+        var readyIp: String? = null
+        wdm.startHostingGroup("SESS1", "Host", 49320, onReady = { readyIp = it }, onError = { i, d -> fail("$i:$d") })
+        driver.currentLinkState = P2pDriver.GroupLinkState(true, true, "192.168.49.1", "DIRECT-Rm-1234")
+        sched.advanceBy(400L)     // group formed
+        sched.advanceBy(1_300L)   // two credential retries * 600ms
+        assertEquals("192.168.49.1", readyIp)
+        val txt = driver.registeredTxt!!
+        assertEquals("Host must publish a JOINABLE group identity", "DIRECT-Rm-1234", txt["gn"])
+        assertEquals("Abc12345678", txt["gp"])
+        wdm.teardownRadio()
+    }
+
+    @Test
+    fun directGroupIdentityValidationMatchesAndroidGroupNaming() {
+        assertTrue(WifiDirectManager.isValidDirectGroupSsid("DIRECT-Rm-1234"))
+        assertTrue(WifiDirectManager.isValidDirectGroupPassphrase("Abc12345678"))
+        assertFalse("A bare DIRECT- prefix is not a group", WifiDirectManager.isValidDirectGroupSsid("DIRECT-"))
+        assertFalse(WifiDirectManager.isValidDirectGroupSsid("realme 11"))
+        assertFalse("Group SSIDs cannot contain spaces", WifiDirectManager.isValidDirectGroupSsid("DIRECT-RM Nova"))
+        assertFalse(WifiDirectManager.isValidDirectGroupPassphrase("short"))
     }
 }
