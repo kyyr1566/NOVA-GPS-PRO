@@ -961,9 +961,6 @@ class PttRegressionTest {
         hsHostRepo.endSessionByUser()
         assertTrue(waitUntil { hsGuestRepo.state.value.phase == PttPhase.DISCONNECTED })
     }
-        hsHostRepo.endSessionByUser()
-        assertTrue(waitUntil { hsGuestRepo.state.value.phase == PttPhase.DISCONNECTED })
-    }
 
     // =========================================================================
     // FIELD REPORT (2 real phones): host "realme 11" IS discovered, but joining always

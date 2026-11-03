@@ -1123,7 +1123,6 @@ class WifiDirectManager(
     }
 
     /**
-    /**
      * Client Wi-Fi Direct association, organised around the two REAL-radio join paths:
      *
      *  • Direct group join (preferred) — the host advertised a `DIRECT-...` SSID + WPA2 passphrase
