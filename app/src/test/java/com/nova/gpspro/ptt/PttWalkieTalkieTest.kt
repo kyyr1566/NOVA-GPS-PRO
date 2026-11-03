@@ -196,6 +196,7 @@ class PttWalkieTalkieTest {
                 sessionId = "sess1",
                 sessionSaltHex = "aabbccdd",
                 hostPublicKeyHex = "30593013",
+                hostPublicKeyHashHex = "a".repeat(64),
                 serverNonce = "11223344",
                 hostId = "H1",
                 hostName = "Captain",
