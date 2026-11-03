@@ -1100,8 +1100,8 @@ class PttRegressionTest {
         var readyIp: String? = null
         wdm.startHostingGroup("SESS1", "Host", 49320, onReady = { readyIp = it }, onError = { i, d -> fail("$i:$d") })
         driver.currentLinkState = P2pDriver.GroupLinkState(true, true, "192.168.49.1", "DIRECT-Rm-1234")
-        sched.advanceBy(400L)     // group formed
-        sched.advanceBy(1_300L)   // two credential retries * 600ms
+        sched.advanceBy(400L)                       // group formed -> first credential read (null)
+        repeat(12) { sched.advanceBy(600L) }        // each retry is chained 600ms after the previous read-back
         assertEquals("192.168.49.1", readyIp)
         val txt = driver.registeredTxt!!
         assertEquals("Host must publish a JOINABLE group identity", "DIRECT-Rm-1234", txt["gn"])
