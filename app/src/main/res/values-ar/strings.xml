@@ -340,6 +340,7 @@
     <string name="ptt_notif_title">📡 RMG-GPS-Pro — اللاسلكي نشط</string>
     المتصلون: %1$d • %2$s
     <string name="ptt_notif_state_ready">جاهز</string>
+    <string name="ptt_notif_body_fmt">متصل: %1$d • %2$s</string>
     <string name="ptt_notif_state_muted">الصوت مكتوم</string>
     <string name="ptt_you_tag">أنت</string>
     <string name="ptt_host_tag">المضيف</string>

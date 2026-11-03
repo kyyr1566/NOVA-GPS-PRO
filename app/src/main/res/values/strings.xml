@@ -343,6 +343,7 @@
     <string name="ptt_notif_title">📡 RMG-GPS-Pro — Walkie-Talkie Active</string>
     Connected: %1$d • %2$s
     <string name="ptt_notif_state_ready">Ready</string>
+    <string name="ptt_notif_body_fmt">Connected: %1$d • %2$s</string>
     <string name="ptt_notif_state_muted">Audio Muted</string>
     <string name="ptt_you_tag">You</string>
     <string name="ptt_host_tag">Host</string>
