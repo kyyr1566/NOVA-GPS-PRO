@@ -364,7 +364,7 @@
     <string name="ptt_connecting_tcp_auth">Radio linked — verifying channel code…</string>
 <string name="ptt_diag_unverified_host">This device is not a verified RMG-GPS-Pro host. Search again and pick a listed session.</string>
 <string name="ptt_diag_approval_pending">Waiting for the host to tap Accept…</string>
-<string name="ptt_diag_identity_proof_rejected">Wi-Fi Direct link and TCP reached the host, but the host rejected this device's identity proof.</string>
+<string name="ptt_diag_identity_proof_rejected">Wi-Fi Direct link and TCP reached the host, but the host rejected the identity proof sent by this device.</string>
 <string name="ptt_diag_approval_timeout">The host did not approve the request in time.</string>
 <string name="ptt_diag_pin_mismatch">Security check failed: the responding host is not the verified session you selected.</string>
 <string name="ptt_diag_rejected_by_host">The host declined your request.</string>
