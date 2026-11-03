@@ -31,6 +31,8 @@ import com.nova.gpspro.settings.Units
 import com.nova.gpspro.license.ActivationCancellation
 import com.nova.gpspro.license.ActivationView
 import com.nova.gpspro.license.LicenseActivationResult
+import com.nova.gpspro.connect.RmgConnectOverlay
+import com.nova.gpspro.connect.RmgConnectService
 import com.nova.gpspro.onboarding.OnboardingManager
 import com.nova.gpspro.onboarding.OnboardingView
 import com.nova.gpspro.onboarding.ShortSplashView
@@ -48,6 +50,9 @@ class MainActivity : Activity() {
     lateinit var message: CenterMessage; private set
 
     private lateinit var activityRoot: FrameLayout
+    private var overlayHost: FrameLayout? = null
+    private var rmgConnectOverlay: RmgConnectOverlay? = null
+    private var pendingOpenRmgConnect = false
     private var activationView: ActivationView? = null
     private var mainUiReady = false
     private var onboardingShowing = false
@@ -83,6 +88,8 @@ class MainActivity : Activity() {
         app = application as NovaApp
         units = Units(this, app.settings)
         current = (savedInstanceState?.getInt("page") ?: 0).coerceIn(0, 5)
+        pendingOpenRmgConnect = (savedInstanceState?.getBoolean("rmg_open") == true) ||
+            (intent?.getBooleanExtra(RmgConnectService.EXTRA_OPEN_RMG_CONNECT, false) == true)
 
         activityRoot = FrameLayout(this).apply {
             setBackgroundColor(C.BG)
@@ -164,6 +171,8 @@ class MainActivity : Activity() {
 
     private fun createMainUi(showSplash: Boolean) {
         activityRoot.removeAllViews()
+        overlayHost = null
+        rmgConnectOverlay = null
         activationView = null
         setMainSystemBars()
 
@@ -177,6 +186,9 @@ class MainActivity : Activity() {
         column.addView(content, lp(h = 0, weight = 1f))
         column.addView(buildBottomBar(), lp())
         activityRoot.addView(column, FrameLayout.LayoutParams(-1, -1))
+        val host = FrameLayout(this)
+        overlayHost = host
+        activityRoot.addView(host, FrameLayout.LayoutParams(-1, -1))
         message = CenterMessage(activityRoot)
         mainUiReady = true
 
@@ -187,6 +199,10 @@ class MainActivity : Activity() {
             val splash = ShortSplashView(this) {
                 splashShowing = false
                 if (isStartedFlag) maybeAskPermission()
+                if (pendingOpenRmgConnect) {
+                    pendingOpenRmgConnect = false
+                    openRmgConnect()
+                }
             }
             activityRoot.addView(splash, FrameLayout.LayoutParams(-1, -1))
             splash.start()
@@ -195,7 +211,12 @@ class MainActivity : Activity() {
         // If activation finished while this Activity was already started, start GPS before
         // exposing the selected page. Otherwise onStart() performs this in the usual order.
         if (isStartedFlag) startMainGpsRuntime()
+        if (!showSplash && pendingOpenRmgConnect) current = 3
         selectTab(current)
+        if (!showSplash && pendingOpenRmgConnect) {
+            pendingOpenRmgConnect = false
+            openRmgConnect()
+        }
         if (isStartedFlag) maybeAskPermission()
     }
 
@@ -386,7 +407,53 @@ class MainActivity : Activity() {
     }
 
     fun showPage(i: Int) {
+        if (rmgConnectOverlay != null) closeRmgConnect()
         if (mainUiReady && i in pages.indices && (i != current || !pageShown)) selectTab(i)
+    }
+
+    fun openRmgConnect() {
+        val host = overlayHost ?: return
+        if (!mainUiReady) return
+        if (rmgConnectOverlay != null) return
+        val overlay = RmgConnectOverlay(this) { closeRmgConnect() }.apply {
+            alpha = 0f
+            translationY = dp(16).toFloat()
+        }
+        rmgConnectOverlay = overlay
+        host.addView(overlay, FrameLayout.LayoutParams(-1, -1))
+        overlay.animate().alpha(1f).translationY(0f).setDuration(180).start()
+    }
+
+    fun closeRmgConnect() {
+        val overlay = rmgConnectOverlay ?: return
+        rmgConnectOverlay = null
+        overlay.animate().alpha(0f).translationY(dp(12).toFloat()).setDuration(140).withEndAction {
+            overlayHost?.removeView(overlay)
+        }.start()
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent?.getBooleanExtra(RmgConnectService.EXTRA_OPEN_RMG_CONNECT, false) == true) {
+            intent.removeExtra(RmgConnectService.EXTRA_OPEN_RMG_CONNECT)
+            if (mainUiReady && !splashShowing && !onboardingShowing) {
+                showPage(3)
+                openRmgConnect()
+            } else {
+                pendingOpenRmgConnect = true
+            }
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (rmgConnectOverlay != null) {
+            closeRmgConnect()
+            return
+        }
+        @Suppress("DEPRECATION")
+        super.onBackPressed()
     }
 
     private fun selectTab(i: Int) {
@@ -431,6 +498,7 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         isStartedFlag = true
+        app.rmgConnect.isMainActivityStarted = true
         if (onboardingShowing || splashShowing) return
         if (!mainUiReady && app.licenseManager.isActivated()) {
             current = 0
@@ -461,16 +529,22 @@ class MainActivity : Activity() {
         }
         if (mainUiReady) {
             if (pageShown) { pages[current].onHide(); pageShown = false }
-            app.gps.stop()
+            // Keep GPS running ONLY while an active RMG CONNECT session is sharing location;
+            // outside of that session, stop GPS identically to the original lifecycle behavior.
+            if (!app.rmgConnect.shouldKeepGpsRunningInBackground()) {
+                app.gps.stop()
+            }
             app.navigation.flush()
         }
         isStartedFlag = false
+        app.rmgConnect.isMainActivityStarted = false
         super.onStop()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt("page", current)
+        outState.putBoolean("rmg_open", rmgConnectOverlay != null)
     }
 
     // ------------------------------------------------------------- language
@@ -509,6 +583,10 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_LOC) app.gps.refresh()
         if (requestCode == REQ_PERM) { val cb = permCb; permCb = null; cb?.invoke(grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) }
+        if (requestCode == REQ_PERMS) {
+            val cb = permsCb; permsCb = null
+            cb?.invoke(grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED })
+        }
     }
 
     fun openLocationSettings() {
@@ -563,11 +641,17 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------- generic result / permission hooks (Portal)
     private var resultCb: ((Boolean, Intent?) -> Unit)? = null
     private var permCb: ((Boolean) -> Unit)? = null
+    private var permsCb: ((Boolean) -> Unit)? = null
     fun startForResult(i: Intent, cb: (Boolean, Intent?) -> Unit) {
         resultCb = cb
         try { startActivityForResult(i, REQ_GENERIC) } catch (_: Exception) { resultCb = null; message.error(getString(R.string.err_save)) }
     }
     fun requestPerm(perm: String, cb: (Boolean) -> Unit) { permCb = cb; requestPermissions(arrayOf(perm), REQ_PERM) }
+    fun requestPerms(perms: Array<String>, cb: (Boolean) -> Unit) {
+        if (perms.isEmpty()) { cb(true); return }
+        permsCb = cb
+        requestPermissions(perms, REQ_PERMS)
+    }
 
     fun thumbCache(path: String, size: Int): Bitmap? {
         val key = "$path@$size"
@@ -593,5 +677,6 @@ class MainActivity : Activity() {
         private const val REQ_FOLDER = 13
         private const val REQ_GENERIC = 14
         private const val REQ_PERM = 15
+        private const val REQ_PERMS = 16
     }
 }

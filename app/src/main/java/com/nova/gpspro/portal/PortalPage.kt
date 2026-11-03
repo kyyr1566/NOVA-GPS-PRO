@@ -16,6 +16,8 @@ import android.widget.ScrollView
 import com.nova.gpspro.MainActivity
 import com.nova.gpspro.R
 import android.provider.OpenableColumns
+import com.nova.gpspro.connect.RmgConnectManager
+import com.nova.gpspro.connect.RmgSessionSnapshot
 import com.nova.gpspro.data.Destination
 import com.nova.gpspro.data.ExternalLocationParser
 import com.nova.gpspro.data.LocxCodec
@@ -31,35 +33,113 @@ class PortalPage(act: MainActivity) : Page(act) {
     private val repo get() = act.app.destinations
 
     private val tiles = ArrayList<View>()
-    override val view: View = run {
-        val col = c.vbox().apply { setPadding(c.dp(20), c.dp(18), c.dp(20), c.dp(24)) }
-        col.addView(c.text(c.getString(R.string.portal_title), 24f, C.TEXT, Fonts.medium))
-        col.addView(c.text("RMG PORTAL", 12f, C.GOLD, Fonts.medium).apply { letterSpacing = 0.32f }, lp().margins(t = c.dp(2)))
-        col.addView(View(c).apply { background = gradientRect(C.GOLD, C.GOLD_LIGHT, c.dp(2).toFloat()) },
-            LinearLayout.LayoutParams(c.dp(44), c.dp(3)).margins(t = c.dp(10), b = c.dp(22)))
+    private var connectStatusPill: android.widget.TextView? = null
+    private val connectListener = RmgConnectManager.Listener { snap -> updateConnectCardBadge(snap) }
 
+    override val view: View = run {
+        val col = c.vbox().apply { setPadding(c.dp(18), c.dp(14), c.dp(18), c.dp(18)) }
+        col.addView(c.text(c.getString(R.string.portal_title), 23f, C.TEXT, Fonts.medium))
+        col.addView(c.text("RMG PORTAL", 11.5f, C.GOLD, Fonts.medium).apply { letterSpacing = 0.32f }, lp().margins(t = c.dp(2)))
+        col.addView(View(c).apply { background = gradientRect(C.GOLD, C.GOLD_LIGHT, c.dp(2).toFloat()) },
+            LinearLayout.LayoutParams(c.dp(44), c.dp(3)).margins(t = c.dp(8), b = c.dp(14)))
+
+        // Featured RMG CONNECT card ("الاتصال القريب")
+        col.addView(rmgConnectCard(), lp().margins(b = c.dp(11)))
+
+        // Harmoniously scaled-down 2x2 grid preserving all 4 original Portal tools & full usability
         val row1 = c.hbox(); val row2 = c.hbox()
-        row1.addView(tile("📤", R.string.portal_export, R.string.portal_export_desc) { export() }, lp(0, weight = 1f).margins(e = c.dp(7)))
-        row1.addView(tile("📥", R.string.portal_import, R.string.portal_import_desc) { import() }, lp(0, weight = 1f).margins(s = c.dp(7)))
-        row2.addView(tile("◈", R.string.portal_qr_create, R.string.portal_qr_create_desc) { createQr() }, lp(0, weight = 1f).margins(e = c.dp(7)))
-        row2.addView(tile("◇", R.string.portal_qr_scan, R.string.portal_qr_scan_desc) { scanQr() }, lp(0, weight = 1f).margins(s = c.dp(7)))
-        col.addView(row1, lp()); col.addView(row2, lp().margins(t = c.dp(14)))
+        row1.addView(tile("📤", R.string.portal_export, R.string.portal_export_desc) { export() }, lp(0, weight = 1f).margins(e = c.dp(6)))
+        row1.addView(tile("📥", R.string.portal_import, R.string.portal_import_desc) { import() }, lp(0, weight = 1f).margins(s = c.dp(6)))
+        row2.addView(tile("◈", R.string.portal_qr_create, R.string.portal_qr_create_desc) { createQr() }, lp(0, weight = 1f).margins(e = c.dp(6)))
+        row2.addView(tile("◇", R.string.portal_qr_scan, R.string.portal_qr_scan_desc) { scanQr() }, lp(0, weight = 1f).margins(s = c.dp(6)))
+        col.addView(row1, lp()); col.addView(row2, lp().margins(t = c.dp(10)))
         FitScroll(c, col).compressGroups(col).compressPadding(*tiles.toTypedArray())
-            .shrinkable(c.dp(118), c.dp(168)) { h -> tiles.forEach { if (it.minimumHeight != h) it.minimumHeight = h } }
+            .shrinkable(c.dp(104), c.dp(128)) { h -> tiles.forEach { if (it.minimumHeight != h) it.minimumHeight = h } }
+    }
+
+    override fun onShow() {
+        c.app.rmgConnect.addListener(connectListener)
+    }
+
+    override fun onHide() {
+        c.app.rmgConnect.removeListener(connectListener)
+    }
+
+    private fun rmgConnectCard(): View = c.hbox().apply {
+        gravity = Gravity.CENTER_VERTICAL
+        val r = c.dp(22).toFloat()
+        background = ripple(roundRect(C.CARD, r, C.GOLD_LIGHT, c.dp(1)), r)
+        softElevation(3f)
+        setPadding(c.dp(14), c.dp(13), c.dp(14), c.dp(13))
+        setOnClickListener { c.openRmgConnect() }
+
+        val iconBox = ImageView(c).apply {
+            setImageResource(R.drawable.ic_rmg_connect)
+            imageTintList = android.content.res.ColorStateList.valueOf(C.GOLD_DEEP)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+            background = roundRect(C.GOLD_PALE, c.dp(15).toFloat(), C.GOLD_LIGHT, c.dp(1))
+            val pad = c.dp(10)
+            setPadding(pad, pad, pad, pad)
+        }
+        addView(iconBox, LinearLayout.LayoutParams(c.dp(46), c.dp(46)))
+
+        val textCol = c.vbox().apply {
+            setPadding(c.dp(12), 0, c.dp(8), 0)
+        }
+        textCol.addView(c.text(c.getString(R.string.rmg_connect_badge), 10f, C.GOLD, Fonts.bold).apply {
+            letterSpacing = 0.16f
+        })
+        textCol.addView(c.text(c.getString(R.string.rmg_connect_card_title), 15.5f, C.TEXT, Fonts.bold), lp().margins(t = c.dp(1)))
+        textCol.addView(c.text(c.getString(R.string.rmg_connect_card_desc), 11.8f, C.TEXT2).apply {
+            setLineSpacing(0f, 1.14f)
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, lp().margins(t = c.dp(2)))
+        addView(textCol, lp(0, weight = 1f))
+
+        val pill = c.text("", 11f, C.GOLD_DEEP, Fonts.bold).apply {
+            gravity = Gravity.CENTER
+            setPadding(c.dp(9), c.dp(5), c.dp(9), c.dp(5))
+        }
+        connectStatusPill = pill
+        addView(pill, LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
+        updateConnectCardBadge(c.app.rmgConnect.snapshot)
+    }
+
+    private fun updateConnectCardBadge(snap: RmgSessionSnapshot) {
+        val pill = connectStatusPill ?: return
+        val r = c.dp(10).toFloat()
+        when {
+            snap.activeConnectedCount > 0 -> {
+                pill.text = "● ${snap.activeConnectedCount}"
+                pill.setTextColor(C.GREEN_DEEP)
+                pill.background = roundRect(C.GREEN_LIGHT, r, C.GREEN, c.dp(1))
+            }
+            snap.isGroupHost -> {
+                pill.text = "●"
+                pill.setTextColor(C.GOLD_DEEP)
+                pill.background = roundRect(C.GOLD_PALE, r, C.GOLD_LIGHT, c.dp(1))
+            }
+            else -> {
+                pill.text = if (c.isRtl()) "‹" else "›"
+                pill.setTextColor(C.GOLD_DEEP)
+                pill.background = roundRect(C.GOLD_PALE, r, C.GOLD_LIGHT, c.dp(1))
+            }
+        }
     }
 
     private fun tile(icon: String, title: Int, desc: Int, onClick: () -> Unit): View = c.vbox().also { tiles.add(it) }.apply {
-        val r = c.dp(24).toFloat()
-        background = ripple(c.card(24), r); softElevation(3f)
-        setPadding(c.dp(16), c.dp(20), c.dp(16), c.dp(20))
-        minimumHeight = c.dp(168)
+        val r = c.dp(20).toFloat()
+        background = ripple(c.card(20), r); softElevation(3f)
+        setPadding(c.dp(14), c.dp(13), c.dp(14), c.dp(13))
+        minimumHeight = c.dp(128)
         setOnClickListener { onClick() }
-        addView(c.text(icon, 24f, C.GOLD_DEEP).apply {
+        addView(c.text(icon, 20f, C.GOLD_DEEP).apply {
             gravity = Gravity.CENTER
-            background = roundRect(C.GOLD_PALE, c.dp(18).toFloat(), C.GOLD_LIGHT, c.dp(1))
-        }, LinearLayout.LayoutParams(c.dp(54), c.dp(54)))
-        addView(c.text(c.getString(title), 16f, C.TEXT, Fonts.medium), lp().margins(t = c.dp(16)))
-        addView(c.text(c.getString(desc), 12.5f, C.TEXT2).apply { setLineSpacing(0f, 1.15f) }, lp().margins(t = c.dp(4)))
+            background = roundRect(C.GOLD_PALE, c.dp(14).toFloat(), C.GOLD_LIGHT, c.dp(1))
+        }, LinearLayout.LayoutParams(c.dp(42), c.dp(42)))
+        addView(c.text(c.getString(title), 14.5f, C.TEXT, Fonts.medium), lp().margins(t = c.dp(10)))
+        addView(c.text(c.getString(desc), 11.5f, C.TEXT2).apply { setLineSpacing(0f, 1.15f) }, lp().margins(t = c.dp(3)))
     }
 
     // ================================================================ selection
