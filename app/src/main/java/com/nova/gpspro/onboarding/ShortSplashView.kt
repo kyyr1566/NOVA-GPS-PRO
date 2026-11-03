@@ -42,10 +42,10 @@ class ShortSplashView(
             intArrayOf(white, Color.parseColor("#FBF9F4"))
         ).apply {
             shape = GradientDrawable.RECTANGLE
-            cornerRadius = ctx.dpf(28f)
+            cornerRadius = this@ShortSplashView.dpf(28f)
             setStroke(ctx.dp(1), border)
         }
-        elevation = ctx.dpf(8f)
+        elevation = this@ShortSplashView.dpf(8f)
         outlineAmbientShadowColor = shadowTint
         outlineSpotShadowColor = shadowTint
         val arrowIv = ImageView(ctx).apply {

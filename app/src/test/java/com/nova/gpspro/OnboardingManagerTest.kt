@@ -106,8 +106,8 @@ class OnboardingManagerTest {
     @Test fun case7_constants_andClassesExist() {
         assertEquals("nova_onboarding", OnboardingManager.FILE)
         assertEquals("onboarding_completed", OnboardingManager.KEY_COMPLETED)
-        assertNotNull(Class.forName("com.nova.gpspro.onboarding.OnboardingView"))
-        assertNotNull(Class.forName("com.nova.gpspro.onboarding.ShortSplashView"))
+        assertNotNull(Class.forName("com.nova.gpspro.onboarding.OnboardingView", false, javaClass.classLoader))
+        assertNotNull(Class.forName("com.nova.gpspro.onboarding.ShortSplashView", false, javaClass.classLoader))
     }
 
     @Test fun allIconAssetsReplacedWithRoyalBlueArrowAndValidDimensions() {

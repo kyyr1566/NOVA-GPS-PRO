@@ -127,10 +127,10 @@ class OnboardingView(
                 intArrayOf(white, ivorySoft)
             ).apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = ctx.dpf(10f)
+                cornerRadius = this@OnboardingView.dpf(10f)
                 setStroke(ctx.dp(1), borderWarm)
             }
-            elevation = ctx.dpf(3f)
+            elevation = this@OnboardingView.dpf(3f)
             outlineAmbientShadowColor = cardShadowTint
             outlineSpotShadowColor = cardShadowTint
             val iv = ImageView(ctx).apply {
@@ -155,14 +155,14 @@ class OnboardingView(
 
         skipBtn = ctx.text(ctx.getString(R.string.onboarding_skip), 13.5f, textSecondary, Fonts.medium).apply {
             gravity = Gravity.CENTER
-            val r = ctx.dpf(18f)
+            val r = this@OnboardingView.dpf(18f)
             background = ripple(
                 roundRect(white, r, borderWarm, ctx.dp(1)),
                 r,
                 Color.parseColor("#182457D6")
             )
             setPadding(ctx.dp(15), ctx.dp(7), ctx.dp(15), ctx.dp(7))
-            elevation = ctx.dpf(1f)
+            elevation = this@OnboardingView.dpf(1f)
             isClickable = true
             isFocusable = true
             textDirection = View.TEXT_DIRECTION_LOCALE
@@ -195,7 +195,7 @@ class OnboardingView(
                 val active = idx == 0
                 background = GradientDrawable().apply {
                     shape = GradientDrawable.RECTANGLE
-                    cornerRadius = ctx.dpf(6f)
+                    cornerRadius = this@OnboardingView.dpf(6f)
                     setColor(if (active) royal else dotIdle)
                 }
                 layoutParams = LinearLayout.LayoutParams(if (active) ctx.dp(28) else ctx.dp(8), ctx.dp(8)).apply {
@@ -212,7 +212,7 @@ class OnboardingView(
         // ---------------- 4) Primary Royal-Blue Action Button ----------------
         actionBtn = ctx.text("", 16f, white, Fonts.bold).apply {
             gravity = Gravity.CENTER
-            val r = ctx.dpf(18f)
+            val r = this@OnboardingView.dpf(18f)
             val fill = GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
                 intArrayOf(royalBright, royal, royalDeep)
@@ -222,7 +222,7 @@ class OnboardingView(
             }
             background = ripple(fill, r, Color.parseColor("#33FFFFFF"))
             setPadding(ctx.dp(24), ctx.dp(15), ctx.dp(24), ctx.dp(15))
-            elevation = ctx.dpf(6f)
+            elevation = this@OnboardingView.dpf(6f)
             outlineAmbientShadowColor = cardShadowTint
             outlineSpotShadowColor = cardShadowTint
             isClickable = true
@@ -304,7 +304,7 @@ class OnboardingView(
                 }
                 if (dragging) {
                     val activePage = pages[current]
-                    val maxShift = (width * 0.28f).coerceAtLeast(ctx.dpf(60f))
+                    val maxShift = (width * 0.28f).coerceAtLeast(this@OnboardingView.dpf(60f))
                     val damped = (dx * 0.42f).coerceIn(-maxShift, maxShift)
                     activePage.translationX = damped
                     activePage.alpha = (1f - abs(damped) / (maxShift * 2.2f)).coerceIn(0.65f, 1f)
@@ -319,8 +319,8 @@ class OnboardingView(
                 velocityTracker = null
 
                 val activePage = pages[current]
-                val threshold = (width * 0.16f).coerceAtLeast(ctx.dpf(48f))
-                val fastSwipe = abs(vx) > 450f && abs(dx) > ctx.dpf(24f)
+                val threshold = (width * 0.16f).coerceAtLeast(this@OnboardingView.dpf(48f))
+                val fastSwipe = abs(vx) > 450f && abs(dx) > this@OnboardingView.dpf(24f)
                 if (dragging && (abs(dx) > threshold || fastSwipe) && ev.actionMasked == MotionEvent.ACTION_UP) {
                     // RTL natural paging: next page sits visually to the left, so dragging right (dx > 0) or left?
                     // Support standard directional feel: in RTL dragging right advances, and on page 0 dragging left also advances smoothly if user swipes left.
@@ -372,7 +372,7 @@ class OnboardingView(
         val to = pages[target]
         val forward = target > current
         val sign = if (isRtl()) (if (forward) -1 else 1) else (if (forward) 1 else -1)
-        val travel = ctx.dpf(36f)
+        val travel = this@OnboardingView.dpf(36f)
 
         from.animate().cancel()
         to.animate().cancel()
@@ -445,19 +445,19 @@ class OnboardingView(
         }
         page.findViewWithTag<View>("badge")?.let { b ->
             b.alpha = 0f
-            b.translationY = ctx.dpf(6f)
+            b.translationY = this@OnboardingView.dpf(6f)
             b.animate().alpha(1f).translationY(0f).setStartDelay(50).setDuration(250)
                 .setInterpolator(DecelerateInterpolator()).start()
         }
         page.findViewWithTag<View>("title")?.let { t ->
             t.alpha = 0f
-            t.translationY = ctx.dpf(9f)
+            t.translationY = this@OnboardingView.dpf(9f)
             t.animate().alpha(1f).translationY(0f).setStartDelay(90).setDuration(270)
                 .setInterpolator(DecelerateInterpolator()).start()
         }
         page.findViewWithTag<View>("desc")?.let { d ->
             d.alpha = 0f
-            d.translationY = ctx.dpf(8f)
+            d.translationY = this@OnboardingView.dpf(8f)
             d.animate().alpha(1f).translationY(0f).setStartDelay(130).setDuration(280)
                 .setInterpolator(DecelerateInterpolator()).start()
         }
@@ -503,11 +503,11 @@ class OnboardingView(
             gravity = Gravity.CENTER_HORIZONTAL
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = ctx.dpf(28f)
+                cornerRadius = this@OnboardingView.dpf(28f)
                 setColor(white)
                 setStroke(ctx.dp(1), borderWarm)
             }
-            elevation = ctx.dpf(6f)
+            elevation = this@OnboardingView.dpf(6f)
             outlineAmbientShadowColor = cardShadowTint
             outlineSpotShadowColor = cardShadowTint
             setPadding(ctx.dp(16), ctx.dp(16), ctx.dp(16), ctx.dp(16))
@@ -525,7 +525,7 @@ class OnboardingView(
             letterSpacing = 0.08f
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = ctx.dpf(14f)
+                cornerRadius = this@OnboardingView.dpf(14f)
                 setColor(royalPale)
                 setStroke(ctx.dp(1), royalStroke)
             }
@@ -577,7 +577,7 @@ class OnboardingView(
             gravity = Gravity.CENTER_VERTICAL
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = ctx.dpf(16f)
+                cornerRadius = this@OnboardingView.dpf(16f)
                 setColor(greenPale)
             }
             setPadding(ctx.dp(11), ctx.dp(6), ctx.dp(12), ctx.dp(6))
@@ -600,7 +600,7 @@ class OnboardingView(
             gravity = Gravity.CENTER_VERTICAL
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = ctx.dpf(16f)
+                cornerRadius = this@OnboardingView.dpf(16f)
                 setColor(royalPale)
                 setStroke(ctx.dp(1), royalStroke)
             }
@@ -624,7 +624,7 @@ class OnboardingView(
             gravity = Gravity.CENTER
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = ctx.dpf(15f)
+                cornerRadius = this@OnboardingView.dpf(15f)
                 setColor(ivory)
                 setStroke(ctx.dp(1), borderWarm)
             }
@@ -666,7 +666,7 @@ class OnboardingView(
             gravity = Gravity.CENTER_VERTICAL
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = ctx.dpf(16f)
+                cornerRadius = this@OnboardingView.dpf(16f)
                 setColor(ivory)
                 setStroke(ctx.dp(1), borderWarm)
             }
@@ -706,7 +706,7 @@ class OnboardingView(
             textDirection = View.TEXT_DIRECTION_LTR
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = ctx.dpf(11f)
+                cornerRadius = this@OnboardingView.dpf(11f)
                 setColor(royal)
             }
             setPadding(ctx.dp(10), ctx.dp(5), ctx.dp(10), ctx.dp(5))
@@ -727,7 +727,7 @@ class OnboardingView(
             gravity = Gravity.CENTER
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = ctx.dpf(14f)
+                cornerRadius = this@OnboardingView.dpf(14f)
                 setColor(ivory)
                 setStroke(ctx.dp(1), borderWarm)
             }
@@ -913,10 +913,10 @@ class OnboardingView(
         override fun onDraw(canvas: Canvas) {
             val w = width.toFloat()
             val h = height.toFloat()
-            if (w <= 0f || h <= 0f) return
+            val s = min(w, h)
+            if (s <= dpf(8f)) return
             val cx = w / 2f
             val cy = h / 2f
-            val s = min(w, h)
 
             canvas.save()
             canvas.clipPath(clipPath)
@@ -1109,10 +1109,10 @@ class OnboardingView(
         override fun onDraw(canvas: Canvas) {
             val w = width.toFloat()
             val h = height.toFloat()
-            if (w <= 0f || h <= 0f) return
+            val s = min(w, h)
+            if (s <= dpf(8f)) return
             val cx = w / 2f
             val cy = h / 2f
-            val s = min(w, h)
 
             canvas.drawRoundRect(stageRect, dpf(20f), dpf(20f), stagePaint)
             canvas.drawCircle(cx, cy, s * 0.45f, haloPaint)
@@ -1283,8 +1283,8 @@ class OnboardingView(
         override fun onDraw(canvas: Canvas) {
             val w = width.toFloat()
             val h = height.toFloat()
-            if (w <= 0f || h <= 0f) return
             val s = min(w, h)
+            if (s <= dpf(8f)) return
             val rtl = layoutDirection == LAYOUT_DIRECTION_RTL
 
             canvas.drawRoundRect(stageRect, dpf(20f), dpf(20f), stagePaint)
