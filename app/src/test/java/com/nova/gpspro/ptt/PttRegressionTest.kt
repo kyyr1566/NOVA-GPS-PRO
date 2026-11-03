@@ -585,9 +585,9 @@ class PttRegressionTest {
         // Advance past 5s DNS-SD window into Phase B Peer fallback (5000 + 1400ms)
         fallbackSched.advanceBy(5_100L)
         fallbackSched.advanceBy(1_400L)
-        assertEquals(1, fallbackList.size)
-        assertEquals("Redmi-Host", fallbackList[0].hostName)
-        assertTrue("Must mark candidate as discoveredViaFallback", fallbackList[0].discoveredViaFallback)
+        // Phase 2: a bare P2P neighbour is NEVER a verified RMG host (no session id / certificate
+        // pin), so the peer fallback must not offer it to the user as a joinable session.
+        assertTrue("Unverified peers must never be listed as confirmed hosts", fallbackList.isEmpty())
         fallbackWdm.teardownRadio()
 
         // Empty timeout after 3 bounded rounds
@@ -648,7 +648,8 @@ class PttRegressionTest {
             deviceName = "RandomPhone",
             tcpPort = 49320,
             protocolVersion = PttProtocol.PROTOCOL_VERSION,
-            lastSeenMs = System.currentTimeMillis()
+            lastSeenMs = System.currentTimeMillis(),
+            hostCertificatePin = TEST_HOST_PIN
         )
         assertFalse(unverified.isVerifiedAppHost)
         assertFalse(repo.requestJoinDiscoveredSession(unverified))
@@ -1061,7 +1062,8 @@ class PttRegressionTest {
             lastSeenMs = 1L,
             groupOwnerIpHint = "192.168.49.1",
             groupNetworkName = "DIRECT-Rm-Phone",
-            groupPassphrase = "s3cret-pass"
+            groupPassphrase = "s3cret-pass",
+            hostCertificatePin = TEST_HOST_PIN
         )
         assertTrue("Credentials from DNS-SD must be treated as joinable", session.hasDirectGroupCredentials)
 
@@ -1100,7 +1102,8 @@ class PttRegressionTest {
             tcpPort = PttProtocol.DEFAULT_TCP_PORT,
             protocolVersion = PttProtocol.PROTOCOL_VERSION,
             lastSeenMs = 1L,
-            discoveredViaFallback = true
+            discoveredViaFallback = true,
+            hostCertificatePin = TEST_HOST_PIN
         )
         assertFalse(peerOnly.hasDirectGroupCredentials)
 
@@ -1132,7 +1135,8 @@ class PttRegressionTest {
                 protocolVersion = PttProtocol.PROTOCOL_VERSION, lastSeenMs = 0L,
                 groupOwnerIpHint = "192.168.49.1",
                 groupNetworkName = "DIRECT-Host-X",
-                groupPassphrase = "pass123456"
+                groupPassphrase = "pass123456",
+                hostCertificatePin = TEST_HOST_PIN
             ),
             onInitiated = {},
             onFailed = { i, d -> issue = i; diag = d }
