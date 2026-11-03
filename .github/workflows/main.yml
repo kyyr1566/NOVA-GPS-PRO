@@ -49,6 +49,13 @@ jobs:
           set -o pipefail
           ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
 
+      - name: Annotate failure diagnostics
+        if: failure()
+        run: |
+          ERR=$(grep -E "e: |error:|FAILED|AssertionError|Exception|Caused by:" test.log build.log 2>/dev/null | head -n 12 | tr '\n' ' | ' | head -c 900)
+          if [ -z "$ERR" ]; then ERR=$(tail -n 30 test.log build.log 2>/dev/null | tr '\n' ' | ' | head -c 900); fi
+          echo "::error title=Diagnostics::$ERR"
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
