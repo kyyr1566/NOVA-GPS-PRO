@@ -383,9 +383,10 @@ class RadarPage(act: MainActivity) : Page(act) {
             userLat: Double,
             userLon: Double,
             destinations: List<Destination>,
-            rangeMeters: Double
+            rangeMeters: Double,
+            geodesic: (Double, Double, Double, Double) -> GeoMath.Result = GeoMath::between
         ): List<RadarTarget> = destinations.mapNotNull { destination ->
-            val geo = GeoMath.between(userLat, userLon, destination.latitude, destination.longitude)
+            val geo = geodesic(userLat, userLon, destination.latitude, destination.longitude)
             if (geo.distanceM <= rangeMeters) {
                 RadarTarget(destination.id, destination.name, geo.distanceM, geo.initialBearing)
             } else null

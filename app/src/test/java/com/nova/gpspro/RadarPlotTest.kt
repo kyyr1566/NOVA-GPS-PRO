@@ -1,6 +1,7 @@
 package com.nova.gpspro
 
 import com.nova.gpspro.data.Destination
+import com.nova.gpspro.navigation.GeoMath
 import com.nova.gpspro.ui.RadarCalloutLayout
 import com.nova.gpspro.ui.RadarPage
 import com.nova.gpspro.ui.RadarPlot
@@ -12,6 +13,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import java.io.File
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -115,32 +117,46 @@ class RadarPlotTest {
         }
     }
 
+    /** Pure spherical geodesic helper for JVM unit tests (Android runtime uses Location.distanceBetween). */
+    private fun jvmGeodesic(lat1: Double, lon1: Double, lat2: Double, lon2: Double): GeoMath.Result {
+        val rEarth = 6_371_000.0
+        val p1 = Math.toRadians(lat1)
+        val p2 = Math.toRadians(lat2)
+        val dp = Math.toRadians(lat2 - lat1)
+        val dl = Math.toRadians(lon2 - lon1)
+        val a = sin(dp / 2) * sin(dp / 2) + cos(p1) * cos(p2) * sin(dl / 2) * sin(dl / 2)
+        val c = 2 * atan2(sqrt(a), sqrt(1 - a))
+        val y = sin(dl) * cos(p2)
+        val x = cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl)
+        val brg = GeoMath.norm360(Math.toDegrees(atan2(y, x)).toFloat())
+        return GeoMath.Result(rEarth * c, brg)
+    }
+
     @Test fun rangeFilter_5km_showsOnlyLocationsWithin5km() {
-        // 1 deg latitude ≈ 110.574 km at equator; 0.01 deg ≈ 1.11 km
         val userLat = 0.0
         val userLon = 0.0
         val destinations = listOf(
-            Destination("d_800m", "Point A", 0.0072, 0.0, createdAt = 1L),   // ~796 m (inside 5 km)
-            Destination("d_3200m", "Point B", 0.0, 0.0287, createdAt = 2L),  // ~3,195 m (inside 5 km)
-            Destination("d_4900m", "Point C", -0.0440, 0.0, createdAt = 3L), // ~4,865 m (inside 5 km)
-            Destination("d_5400m", "Point D", 0.0490, 0.0, createdAt = 4L),  // ~5,418 m (OUTSIDE 5 km)
-            Destination("d_15km", "Point E", 0.1350, 0.0, createdAt = 5L)    // ~14.9 km (OUTSIDE 5 km)
+            Destination("d_800m", "Point A", 0.0072, 0.0, createdAt = 1L),   // ~800 m (inside 5 km)
+            Destination("d_3200m", "Point B", 0.0, 0.0287, createdAt = 2L),  // ~3,191 m (inside 5 km)
+            Destination("d_4900m", "Point C", -0.0440, 0.0, createdAt = 3L), // ~4,892 m (inside 5 km)
+            Destination("d_5400m", "Point D", 0.0490, 0.0, createdAt = 4L),  // ~5,449 m (OUTSIDE 5 km)
+            Destination("d_15km", "Point E", 0.1350, 0.0, createdAt = 5L)    // ~15.0 km (OUTSIDE 5 km)
         )
 
-        val shown5km = RadarPage.filterTargetsInRange(userLat, userLon, destinations, 5_000.0)
+        val shown5km = RadarPage.filterTargetsInRange(userLat, userLon, destinations, 5_000.0, ::jvmGeodesic)
         val ids = shown5km.map { it.id }.toSet()
         assertEquals(setOf("d_800m", "d_3200m", "d_4900m"), ids)
         assertTrue(shown5km.all { it.distanceM <= 5_000.0 })
 
         // Narrowing range to 1 km leaves only d_800m
-        val shown1km = RadarPage.filterTargetsInRange(userLat, userLon, destinations, 1_000.0)
+        val shown1km = RadarPage.filterTargetsInRange(userLat, userLon, destinations, 1_000.0, ::jvmGeodesic)
         assertEquals(listOf("d_800m"), shown1km.map { it.id })
     }
 
     @Test fun liveGpsMovement_updatesDistancesAndRadiiDirectly() {
-        val dest = listOf(Destination("spot", "Saved Destination", 0.0200, 0.0, createdAt = 1L)) // ~2.21 km north
-        val t1 = RadarPage.filterTargetsInRange(0.0000, 0.0, dest, 5_000.0).single()
-        val t2 = RadarPage.filterTargetsInRange(0.0100, 0.0, dest, 5_000.0).single() // moved half-way closer north
+        val dest = listOf(Destination("spot", "Saved Destination", 0.0200, 0.0, createdAt = 1L))
+        val t1 = RadarPage.filterTargetsInRange(0.0000, 0.0, dest, 5_000.0, ::jvmGeodesic).single()
+        val t2 = RadarPage.filterTargetsInRange(0.0100, 0.0, dest, 5_000.0, ::jvmGeodesic).single()
 
         assertTrue("Moving closer must reduce real distance", t2.distanceM < t1.distanceM)
         assertEquals(0f, t1.bearing, 0.5f)
