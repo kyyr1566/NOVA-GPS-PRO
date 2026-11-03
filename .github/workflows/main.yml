@@ -1,4 +1,4 @@
-name: Build RMG-GPS-Pro Walkie-Talkie APK
+name: Build RMG-GPS-Pro APK
 
 on:
   workflow_dispatch:
@@ -29,8 +29,6 @@ jobs:
           chmod +x gradlew
           set -o pipefail
           ./gradlew --no-daemon --stacktrace testDebugUnitTest \
-            --tests "com.nova.gpspro.ptt.PttWalkieTalkieTest" \
-            --tests "com.nova.gpspro.ptt.PttRegressionTest" \
             --tests "com.nova.gpspro.OnboardingManagerTest" \
             --tests "com.nova.gpspro.ThemeSourceTest" \
             --tests "com.nova.gpspro.ThemeContrastTest" \
@@ -43,6 +41,7 @@ jobs:
             --tests "com.nova.gpspro.DestDistanceTest" \
             --tests "com.nova.gpspro.FitTest" \
             --tests "com.nova.gpspro.NavFitTest" \
+            --tests "com.nova.gpspro.NavigationLogicTest" \
             --tests "com.nova.gpspro.SpeedoModeTest" 2>&1 | tee test.log
 
       - name: Run Android Lint (lintDebug)
@@ -57,7 +56,7 @@ jobs:
           set -o pipefail
           ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
           SRC_APK="app/build/outputs/apk/debug/app-debug.apk"
-          OUT_APK="app/build/outputs/apk/debug/RMG-GPS-Pro-WalkieTalkie-Fixed-debug.apk"
+          OUT_APK="app/build/outputs/apk/debug/RMG-GPS-Pro-debug.apk"
           test -f "$SRC_APK"
           cp -f "$SRC_APK" "$OUT_APK"
           SIZE=$(stat -c%s "$OUT_APK")
@@ -68,6 +67,48 @@ jobs:
           fi
           sha256sum "$OUT_APK"
 
+      - name: Verify APK packaging and signature (aapt2 / apksigner / zipalign)
+        run: |
+          set -o pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          BUILD_TOOLS_DIR=$(ls -d "$SDK_ROOT"/build-tools/* 2>/dev/null | sort -V | tail -n 1)
+          echo "Using build-tools: $BUILD_TOOLS_DIR"
+          AAPT2="$BUILD_TOOLS_DIR/aapt2"
+          APKSIGNER="$BUILD_TOOLS_DIR/apksigner"
+          ZIPALIGN="$BUILD_TOOLS_DIR/zipalign"
+          APK="app/build/outputs/apk/debug/RMG-GPS-Pro-debug.apk"
+          test -x "$AAPT2"; test -x "$APKSIGNER"; test -x "$ZIPALIGN"
+
+          echo "--- aapt2 dump badging ---"
+          "$AAPT2" dump badging "$APK" | tee badging.txt
+          grep -E "^package: name='com.nova.gpspro'" badging.txt
+          grep -E "^launchable-activity: name='com.nova.gpspro.MainActivity'" badging.txt
+          if grep -Eiq "walkie|ptt" badging.txt; then
+            echo "ERROR: walkie-talkie reference found in the packaged app metadata"; exit 1
+          fi
+
+          echo "--- aapt2 dump permissions ---"
+          "$AAPT2" dump permissions "$APK" | tee permissions.txt
+          for forbidden in RECORD_AUDIO MODIFY_AUDIO_SETTINGS NEARBY_WIFI_DEVICES CHANGE_WIFI_STATE FOREGROUND_SERVICE_MICROPHONE FOREGROUND_SERVICE_CONNECTED_DEVICE WAKE_LOCK POST_NOTIFICATIONS; do
+            if grep -q "$forbidden" permissions.txt; then
+              echo "ERROR: leftover Walkie-Talkie permission $forbidden"; exit 1
+            fi
+          done
+
+          echo "--- aapt2 dump xmltree (manifest services) ---"
+          "$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml > manifest-tree.txt
+          if grep -qi "PttService" manifest-tree.txt; then
+            echo "ERROR: PttService still declared in the packaged manifest"; exit 1
+          fi
+
+          echo "--- zip integrity + alignment ---"
+          unzip -tq "$APK"
+          "$ZIPALIGN" -c -v 4 "$APK" | tail -n 5
+
+          echo "--- apksigner verify ---"
+          "$APKSIGNER" verify --verbose --print-certs "$APK" | tee signature.txt
+          grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" signature.txt
+
       - name: Annotate failure diagnostics
         if: failure()
         run: |
@@ -75,9 +116,9 @@ jobs:
           if [ -z "$ERR" ]; then ERR=$(tail -n 30 test.log lint.log build.log 2>/dev/null | tr '\n' ' | ' | head -c 950); fi
           echo "::error title=Diagnostics::$ERR"
 
-      - name: Upload RMG-GPS-Pro-WalkieTalkie-Fixed-debug.apk Artifact
+      - name: Upload RMG-GPS-Pro-debug.apk Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RMG-GPS-Pro-WalkieTalkie-Fixed-debug.apk
-          path: app/build/outputs/apk/debug/RMG-GPS-Pro-WalkieTalkie-Fixed-debug.apk
+          name: RMG-GPS-Pro-debug.apk
+          path: app/build/outputs/apk/debug/RMG-GPS-Pro-debug.apk
           if-no-files-found: error

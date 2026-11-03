@@ -44,18 +44,8 @@ class PortalPage(act: MainActivity) : Page(act) {
         row2.addView(tile("◈", R.string.portal_qr_create, R.string.portal_qr_create_desc) { createQr() }, lp(0, weight = 1f).margins(e = c.dp(7)))
         row2.addView(tile("◇", R.string.portal_qr_scan, R.string.portal_qr_scan_desc) { scanQr() }, lp(0, weight = 1f).margins(s = c.dp(7)))
 
-        // Row 3: 5th Walkie-Talkie card with exact single-card width, horizontally centered
-        val row3 = c.hbox().apply { weightSum = 2f }
-        row3.addView(View(c), LinearLayout.LayoutParams(0, 0, 0.5f))
-        row3.addView(
-            tile("📡", R.string.ptt_portal_title, R.string.ptt_portal_desc) { c.openWalkieTalkie() },
-            lp(0, weight = 1f).margins(s = c.dp(7), e = c.dp(7))
-        )
-        row3.addView(View(c), LinearLayout.LayoutParams(0, 0, 0.5f))
-
         col.addView(row1, lp())
         col.addView(row2, lp().margins(t = c.dp(14)))
-        col.addView(row3, lp().margins(t = c.dp(14)))
 
         ScrollView(c).apply {
             isFillViewport = true
