@@ -16,6 +16,11 @@ import kotlin.math.sin
 
 class PttWalkieTalkieTest {
 
+    companion object {
+        /** Deterministic stand-in for a host Keystore SPKI (tests never touch AndroidKeyStore). */
+        val TEST_HOST_SPKI: ByteArray = ByteArray(91) { (it * 3 + 11).toByte() }
+    }
+
     private fun findRepoFile(relativePath: String): File? {
         var dir: File? = File("").absoluteFile
         while (dir != null) {
@@ -29,41 +34,66 @@ class PttWalkieTalkieTest {
     }
 
     // =========================================================================
-    // 1. Channel Code Rules & Cryptographic Challenge-Response Authentication
+    // 1. Host-certificate identity + approval-bound challenge-response authentication
+    //    (channel codes are gone; identity now comes from the host certificate pin)
     // =========================================================================
 
-    @Test
-    fun channelCodeValidationAndGeneration() {
-        assertTrue(PttSettings.isValidChannelCode("ABCD"))
-        assertTrue(PttSettings.isValidChannelCode("rmg2026x"))
-        assertEquals("RMG2026X", PttSettings.normalizeChannelCode("  rmg2026x "))
-
-        assertFalse("Too short (<4)", PttSettings.isValidChannelCode("A12"))
-        assertFalse("Too long (>8)", PttSettings.isValidChannelCode("ABCDEFGHI"))
-        assertFalse("Symbols forbidden", PttSettings.isValidChannelCode("RMG-12"))
-        assertFalse("Spaces forbidden", PttSettings.isValidChannelCode("RMG 12"))
-
-        for (len in 4..8) {
-            val generated = PttSettings.generateChannelCode(len)
-            assertEquals(len, generated.length)
-            assertTrue(PttSettings.isValidChannelCode(generated))
-        }
+    private fun hostKeyPair(): Pair<java.security.KeyPair, String> {
+        val kpg = java.security.KeyPairGenerator.getInstance("EC")
+        kpg.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+        val kp = kpg.generateKeyPair()
+        return kp to PttSecurity.computeCertificatePinIssuerFromEncoded(kp.public.encoded)
     }
 
     @Test
-    fun challengeResponseAcceptsMatchingChannelCodeAndRejectsWrongCode() {
+    fun certificatePinIsStableMatchesTheKeyAndRejectsAnyOtherIdentity() {
+        val (kp, pin) = hostKeyPair()
+        assertEquals(pin, PttSecurity.computeCertificatePinIssuerFromEncoded(kp.public.encoded))
+        assertEquals(pin, PttSecurity.computeCertificatePinIssuer(kp.public))
+        assertEquals(64, pin.length)
+        assertTrue(pin.all { it in "0123456789abcdef" })
+
+        val (otherKp, otherPin) = hostKeyPair()
+        assertNotEquals(pin, otherPin)
+        assertNotEquals(pin, PttSecurity.computeCertificatePinIssuerFromEncoded(otherKp.public.encoded))
+    }
+
+    @Test
+    fun sessionKeyIsDerivedFromTheVerifiedHostKeyAndSessionOnly() {
+        val (kp, _) = hostKeyPair()
+        val (otherKp, _) = hostKeyPair()
+        val sessionId = PttSecurity.randomHex(12)
         val saltHex = PttSecurity.randomHex(16)
+
+        val hostSide = PttSecurity.deriveSessionKeyFromCertificate(kp.public.encoded, sessionId, saltHex)
+        val guestSide = PttSecurity.deriveSessionKeyFromCertificate(kp.public.encoded, sessionId, saltHex)
+        assertArrayEquals("Both sides must derive the same key from the same SPKI", hostSide, guestSide)
+
+        val otherHost = PttSecurity.deriveSessionKeyFromCertificate(otherKp.public.encoded, sessionId, saltHex)
+        assertFalse("A different host identity must yield a different key", hostSide.contentEquals(otherHost))
+
+        val otherSession = PttSecurity.deriveSessionKeyFromCertificate(kp.public.encoded, PttSecurity.randomHex(12), saltHex)
+        assertFalse("A different session id must yield a different key", hostSide.contentEquals(otherSession))
+
+        val otherSalt = PttSecurity.deriveSessionKeyFromCertificate(kp.public.encoded, sessionId, PttSecurity.randomHex(16))
+        assertFalse("A different per-session salt must yield a different key", hostSide.contentEquals(otherSalt))
+    }
+
+    @Test
+    fun joinProofBindsTheVerifiedHostAndRejectsForeignOrReplayedProofs() {
+        val (hostKp, _) = hostKeyPair()
+        val (foreignKp, _) = hostKeyPair()
         val sessionId = PttSecurity.randomHex(8)
+        val saltHex = PttSecurity.randomHex(16)
         val serverNonce = PttSecurity.randomHex(16)
         val clientNonce = PttSecurity.randomHex(16)
 
-        // Case-insensitive normalization: "rmg77k" == "RMG77K"
-        val hostKey = PttSecurity.deriveSessionKey("RMG77K", saltHex)
-        val validGuestKey = PttSecurity.deriveSessionKey("rmg77k", saltHex)
-        val wrongGuestKey = PttSecurity.deriveSessionKey("RMG77Z", saltHex)
+        val hostKey = PttSecurity.deriveSessionKeyFromCertificate(hostKp.public.encoded, sessionId, saltHex)
+        val guestKey = PttSecurity.deriveSessionKeyFromCertificate(hostKp.public.encoded, sessionId, saltHex)
+        val foreignKey = PttSecurity.deriveSessionKeyFromCertificate(foreignKp.public.encoded, sessionId, saltHex)
 
         val validProof = PttSecurity.computeClientJoinProof(
-            sessionKey = validGuestKey,
+            sessionKey = guestKey,
             sessionId = sessionId,
             serverNonce = serverNonce,
             clientNonce = clientNonce,
@@ -71,14 +101,12 @@ class PttWalkieTalkieTest {
             displayName = "Ali"
         )
         assertTrue(
-            "Valid channel code proof must pass host verification",
-            PttSecurity.verifyClientJoinProof(
-                hostKey, sessionId, serverNonce, clientNonce, "DEV_GUEST_1", "Ali", validProof
-            )
+            "A guest that verified the host pin must pass verification",
+            PttSecurity.verifyClientJoinProof(hostKey, sessionId, serverNonce, clientNonce, "DEV_GUEST_1", "Ali", validProof)
         )
 
-        val wrongProof = PttSecurity.computeClientJoinProof(
-            sessionKey = wrongGuestKey,
+        val foreignProof = PttSecurity.computeClientJoinProof(
+            sessionKey = foreignKey,
             sessionId = sessionId,
             serverNonce = serverNonce,
             clientNonce = clientNonce,
@@ -86,34 +114,56 @@ class PttWalkieTalkieTest {
             displayName = "Ali"
         )
         assertFalse(
-            "Wrong channel code must be cryptographically rejected",
-            PttSecurity.verifyClientJoinProof(
-                hostKey, sessionId, serverNonce, clientNonce, "DEV_GUEST_1", "Ali", wrongProof
-            )
+            "A guest that never verified the host certificate must be rejected",
+            PttSecurity.verifyClientJoinProof(hostKey, sessionId, serverNonce, clientNonce, "DEV_GUEST_1", "Ali", foreignProof)
         )
 
         // Replay / nonce tampering must fail
         assertFalse(
-            "Replayed proof with different server nonce must fail",
+            "Replayed proof with a different server nonce must fail",
             PttSecurity.verifyClientJoinProof(
                 hostKey, sessionId, PttSecurity.randomHex(16), clientNonce, "DEV_GUEST_1", "Ali", validProof
             )
         )
 
-        // Mutual authentication: Host proves knowledge of channel code back to Guest
+        // Mutual authentication: the host proves the same verified identity back to the guest
         val assignedToken = PttSecurity.randomHex(16)
-        val hostAcceptProof = PttSecurity.computeHostAcceptProof(
-            hostKey, sessionId, clientNonce, serverNonce, assignedToken
-        )
+        val hostAcceptProof = PttSecurity.computeHostAcceptProof(hostKey, sessionId, clientNonce, serverNonce, assignedToken)
         assertTrue(
-            PttSecurity.verifyHostAcceptProof(
-                validGuestKey, sessionId, clientNonce, serverNonce, assignedToken, hostAcceptProof
-            )
+            PttSecurity.verifyHostAcceptProof(guestKey, sessionId, clientNonce, serverNonce, assignedToken, hostAcceptProof)
         )
         assertFalse(
-            PttSecurity.verifyHostAcceptProof(
-                wrongGuestKey, sessionId, clientNonce, serverNonce, assignedToken, hostAcceptProof
-            )
+            PttSecurity.verifyHostAcceptProof(foreignKey, sessionId, clientNonce, serverNonce, assignedToken, hostAcceptProof)
+        )
+    }
+
+    @Test
+    fun approvalNonceBindsTheFinalSessionKeyAndNeverLeaksItBeforeApproval() {
+        val (hostKp, _) = hostKeyPair()
+        val sessionId = PttSecurity.randomHex(12)
+        val baseKey = PttSecurity.deriveSessionKeyFromCertificate(hostKp.public.encoded, sessionId, PttSecurity.randomHex(16))
+
+        val approvalNonce = PttSecurity.randomHex(16)
+        val hostApproved = PttProtocol.deriveApprovalKey(baseKey, approvalNonce)
+        val guestApproved = PttProtocol.deriveApprovalKey(baseKey, approvalNonce)
+        assertArrayEquals("Approval must produce the same key on both sides", hostApproved, guestApproved)
+
+        assertFalse("The approved key must differ from the un-approved base key", hostApproved.contentEquals(baseKey))
+        assertFalse(
+            "A different approval nonce must produce a different key",
+            hostApproved.contentEquals(PttProtocol.deriveApprovalKey(baseKey, PttSecurity.randomHex(16)))
+        )
+
+        // Pending (unapproved) requests never own a usable approved key.
+        assertFalse(PttSecurity.verifyHostAcceptProof(
+            baseKey, sessionId, "cn", "sn", "tok",
+            PttSecurity.computeHostAcceptProof(hostApproved, sessionId, "cn", "sn", "tok")
+        ))
+
+        // Media keys are derived from the approved key, so media is approval-bound too.
+        assertFalse(
+            PttSecurity.deriveMediaKey(baseKey, sessionId)
+                .contentEquals(PttSecurity.deriveMediaKey(hostApproved, sessionId))
         )
     }
 
@@ -123,7 +173,7 @@ class PttWalkieTalkieTest {
 
     @Test
     fun protocolVersionCompatibilityAndCodecNegotiation() {
-        assertEquals(1, PttProtocol.PROTOCOL_VERSION)
+        assertEquals(2, PttProtocol.PROTOCOL_VERSION)
 
         // Both support Opus + ADPCM -> Opus 16kHz selected
         val bothMask = AudioCodecType.OPUS_16K.mask or AudioCodecType.ADPCM_16K.mask
@@ -135,12 +185,17 @@ class PttWalkieTalkieTest {
         assertEquals(AudioCodecType.ADPCM_16K, AudioCodecType.negotiate(adpcmOnlyMask, bothMask))
 
         // Control frame round-trip + HMAC integrity verification
-        val key = PttSecurity.deriveSessionKey("NOVA99", PttSecurity.randomHex(16))
+        val key = PttSecurity.deriveSessionKeyFromCertificate(
+            TEST_HOST_SPKI,
+            PttSecurity.randomHex(12),
+            PttSecurity.randomHex(16)
+        )
         val framesToTest = listOf(
             PttProtocol.ControlFrame.HelloChallenge(
                 protocolVersion = PttProtocol.PROTOCOL_VERSION,
                 sessionId = "sess1",
                 sessionSaltHex = "aabbccdd",
+                hostPublicKeyHex = "30593013",
                 serverNonce = "11223344",
                 hostId = "H1",
                 hostName = "Captain",
@@ -247,7 +302,7 @@ class PttWalkieTalkieTest {
 
     @Test
     fun udpVoicePacketFramingAndAuthentication() {
-        val sessionKey = PttSecurity.deriveSessionKey("CH2026", "0011223344556677")
+        val sessionKey = PttSecurity.deriveSessionKeyFromCertificate(TEST_HOST_SPKI, "SESS_99", "0011223344556677")
         val mediaKey = PttSecurity.deriveMediaKey(sessionKey, "SESS_99")
         val wrongMediaKey = PttSecurity.deriveMediaKey(sessionKey, "OTHER_SESS")
 

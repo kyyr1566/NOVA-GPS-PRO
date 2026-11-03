@@ -7,6 +7,7 @@ import com.nova.gpspro.navigation.NavigationEngine
 import com.nova.gpspro.settings.SettingsRepository
 import com.nova.gpspro.ui.C
 import com.nova.gpspro.license.LicenseManager
+import com.nova.gpspro.ptt.PttHostIdentity
 import com.nova.gpspro.ptt.PttRepository
 
 class NovaApp : Application() {
@@ -27,7 +28,8 @@ class NovaApp : Application() {
         navigation = NavigationEngine(this, gps, destinations)
         ptt = PttRepository(
             appCtx = this,
-            uiText = { resId -> getString(resId) }
+            uiText = { resId -> getString(resId) },
+            hostPublicKeyProvider = { PttHostIdentity.publicKeyBytes(this) }
         )
     }
 

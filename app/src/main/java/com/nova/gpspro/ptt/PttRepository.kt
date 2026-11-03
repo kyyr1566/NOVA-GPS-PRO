@@ -58,8 +58,6 @@ enum class PttErrorCode {
     P2P_UNSUPPORTED,
     HOSTING_FAILED,
     DISCOVERY_FAILED,
-    HOTSPOT_START_FAILED,
-    HOTSPOT_NOT_CONNECTED,
     P2P_LINK_FAILED,
     PROTOCOL_INCOMPATIBLE,
     AUTH_FAILED,
@@ -73,12 +71,9 @@ data class PendingJoinApproval(
     val requestId: String,
     val participantId: String,
     val displayName: String,
-    val deviceFingerprint: String
-)
-
-data class LocalHotspotCredentials(
-    val ssid: String,
-    val passphrase: String
+    val deviceFingerprint: String,
+    /** P2P/network address the request arrived from, shown to the host for context. */
+    val deviceAddress: String = ""
 )
 
 data class PttUiState(
@@ -87,7 +82,6 @@ data class PttUiState(
     val connectingRadioLinked: Boolean = false,
     val isHost: Boolean = false,
     val displayName: String = "",
-    val channelCode: String = "",
     val talkMode: TalkMode = TalkMode.HOLD_TO_TALK,
     val rogerBeepEnabled: Boolean = true,
     val buttonState: PttButtonVisualState = PttButtonVisualState.IDLE_BLUE,
@@ -99,7 +93,6 @@ data class PttUiState(
     val pendingApprovals: List<PendingJoinApproval> = emptyList(),
     val participants: List<PttParticipant> = emptyList(),
     val connectedCount: Int = 0,
-    val hotspotInfo: LocalHotspotCredentials? = null,
     val showSessionEndedBanner: Boolean = false,
     val errorCode: PttErrorCode = PttErrorCode.NONE,
     val diagnosticMessage: String = ""
@@ -182,6 +175,12 @@ class PttRepository(
     private val clockMs: () -> Long = { SystemClock.elapsedRealtime() },
     /** Localized UI strings for actionable diagnostics; null on the JVM (unit tests). */
     private val uiText: ((Int) -> String)? = null,
+    /**
+     * Supplies the host's certificate public key (SPKI). Advertising its SHA-256 pin in DNS-SD is what
+     * replaces the removed channel code: guests verify the exact host before proving anything.
+     * Production wires this to [PttHostIdentity] (EC P-256 key in the Android Keystore).
+     */
+    private val hostPublicKeyProvider: () -> ByteArray? = { null },
     private val preferredHostTcpPort: Int = PttProtocol.DEFAULT_TCP_PORT,
     private val preferredHostUdpPort: Int = PttProtocol.DEFAULT_UDP_PORT
 ) {
@@ -242,7 +241,6 @@ class PttRepository(
     private val _state = MutableStateFlow(
         PttUiState(
             displayName = settings.displayName,
-            channelCode = settings.lastChannelCode,
             talkMode = settings.talkMode,
             rogerBeepEnabled = settings.rogerBeepEnabled
         )
@@ -255,6 +253,8 @@ class PttRepository(
     private var sessionManager: PttSessionManager? = null
     private var currentSessionId: String = ""
     private var currentSaltHex: String = ""
+    private var hostCertificatePin: String = ""
+    private var hostPublicKeyBytes: ByteArray = ByteArray(0)
     private var sessionKey: ByteArray? = null
     private var mediaKey: ByteArray? = null
     private var negotiatedCodec: AudioCodecType = AudioCodecType.ADPCM_16K
@@ -267,8 +267,8 @@ class PttRepository(
     // Client networking state
     private var clientControlConn: ClientControlConn? = null
     private var pendingTargetSession: DiscoveredPttSession? = null
-    private var pendingJoinChannelCode: String = ""
-    private var pendingJoinViaHotspot: Boolean = false
+    /** Nonce received with JoinPendingApproval; finalises the session key ONLY after the host accepts. */
+    private var pendingApprovalNonce: String = ""
     private val tcpDialInProgress = AtomicBoolean(false)
 
     // Shared UDP voice socket
@@ -288,7 +288,11 @@ class PttRepository(
         val clientNonce: String,
         val serverNonce: String,
         val clientCodecMask: Int,
-        val clientUdpPort: Int
+        val clientUdpPort: Int,
+        /** Nonce handed to the guest with JoinPendingApproval; finalises the session key on Accept. */
+        val approvalNonce: String,
+        /** Session key used to MAC all post-approval frames (base key unless the host accepted). */
+        var approvedSessionKey: ByteArray? = null
     ) : Closeable {
         override fun close() {
             try { socket.close() } catch (_: Throwable) {}
@@ -301,7 +305,11 @@ class PttRepository(
         val token: String,
         val socket: Socket,
         @Volatile var remoteIp: InetAddress,
-        @Volatile var remoteUdpPort: Int
+        @Volatile var remoteUdpPort: Int,
+        /** Approval-bound key for this specific guest connection. */
+        val controlKey: ByteArray,
+        /** Media key bound to the same approval nonce (one guest cannot use another's key). */
+        val mediaKey: ByteArray
     ) : Closeable {
         val alive = AtomicBoolean(true)
         private val writeLock = Any()
@@ -315,7 +323,7 @@ class PttRepository(
             if (!alive.get()) return false
             return try {
                 synchronized(writeLock) {
-                    PttProtocol.writeControlFrame(socket.getOutputStream(), frame, sessionKey)
+                    PttProtocol.writeControlFrame(socket.getOutputStream(), frame, controlKey)
                 }
                 true
             } catch (_: Throwable) {
@@ -335,7 +343,9 @@ class PttRepository(
         val participantToken: String,
         val socket: Socket,
         val hostAddress: InetAddress,
-        val hostUdpPort: Int
+        val hostUdpPort: Int,
+        /** Approval-bound key for this session (never the pre-approval value). */
+        val controlKey: ByteArray
     ) : Closeable {
         val alive = AtomicBoolean(true)
         private val writeLock = Any()
@@ -349,7 +359,7 @@ class PttRepository(
             if (!alive.get()) return false
             return try {
                 synchronized(writeLock) {
-                    PttProtocol.writeControlFrame(socket.getOutputStream(), frame, sessionKey)
+                    PttProtocol.writeControlFrame(socket.getOutputStream(), frame, controlKey)
                 }
                 true
             } catch (_: Throwable) {
@@ -444,14 +454,6 @@ class PttRepository(
                 }
             }
 
-            override fun onLocalHotspotStarted(ssid: String, passphrase: String) {
-                updateState {
-                    it.copy(
-                        hotspotInfo = LocalHotspotCredentials(ssid, passphrase),
-                        errorCode = PttErrorCode.NONE
-                    )
-                }
-            }
 
             override fun onTransportFailure(issue: WifiEnvironmentIssue, diagnostic: String) {
                 val err = mapWifiIssue(issue)
@@ -518,26 +520,23 @@ class PttRepository(
 
     /**
      * Strictly sequenced Host session creation:
-     *  Step 1 (CHECKING): Validates name, channel code, permissions, Wi-Fi state, and P2P hardware
+     *  Step 1 (CHECKING): Validates name, host identity, permissions, Wi-Fi state, and P2P hardware
      *                     BEFORE opening any sockets, starting AudioEngine, or touching ForegroundService.
-     *  Step 2 (HOSTING):  Binds TCP/UDP sockets and requests Wi-Fi Direct group + DNS-SD advertisement
-     *                     (or Local-Only Hotspot). UI shows "Initializing hosting..." — NOT "Session ready".
+     *  Step 2 (HOSTING):  Binds TCP/UDP sockets and requests Wi-Fi Direct group + DNS-SD advertisement.
+     *                     UI shows "Initializing hosting..." — NOT "Session ready".
      *  Step 3 (IN_SESSION): Triggered ONLY after groupFormed & service advertisement succeed. Starts
      *                       AudioEngine receive loop, heartbeat watchdog, and PttService notification.
+     *
+     *  No channel code exists any more: the session secret is derived from this host's certificate,
+     *  whose pin is advertised so guests can verify identity, and the key is only finalised after the
+     *  host explicitly approves a guest.
      */
-    fun createHostSession(rawChannelCode: String, useLocalHotspotFallback: Boolean = false): Boolean {
+    fun createHostSession(): Boolean {
         val name = settings.displayName.trim()
         if (name.isEmpty()) return false
-        if (!PttSettings.isValidChannelCode(rawChannelCode)) {
-            updateState { it.copy(phase = PttPhase.DISCONNECTED, errorCode = PttErrorCode.AUTH_FAILED) }
-            return false
-        }
 
         // Clean any leftover session state before pre-flight checks
         teardownSession(showEndedBanner = false, sendGoodbye = false)
-
-        val code = PttSettings.normalizeChannelCode(rawChannelCode)
-        settings.lastChannelCode = code
 
         // ---- Phase 1: CHECKING (zero sockets / audio / service started yet!) ----
         updateState {
@@ -546,7 +545,6 @@ class PttRepository(
                 discoveryState = PttDiscoveryState.IDLE,
                 isHost = true,
                 displayName = name,
-                channelCode = code,
                 discoveredSessions = emptyList(),
                 showSessionEndedBanner = false,
                 errorCode = PttErrorCode.NONE,
@@ -567,7 +565,7 @@ class PttRepository(
             return false
         }
 
-        // Check Wi-Fi enabled FIRST even for LocalHotspot so Wi-Fi OFF is handled cleanly without crash
+        // Wi-Fi must be ON before any Wi-Fi Direct operation; otherwise fail fast and cleanly
         if (!wifiDirect.isWifiEnabled()) {
             PttDiagnostics.warn("HostCreate", "Aborted in CHECKING: Wi-Fi is turned off")
             updateState {
@@ -581,28 +579,41 @@ class PttRepository(
             return false
         }
 
-        if (!useLocalHotspotFallback) {
-            val envIssue = wifiDirect.diagnoseEnvironment()
-            if (envIssue != WifiEnvironmentIssue.NONE) {
-                val mapped = mapWifiIssue(envIssue)
-                PttDiagnostics.warn("HostCreate", "Aborted in CHECKING: envIssue=$envIssue")
-                updateState {
-                    it.copy(
-                        phase = PttPhase.DISCONNECTED,
-                        isHost = false,
-                        errorCode = mapped,
-                        diagnosticMessage = PttDiagnostics.lastSummary
-                    )
-                }
-                return false
+        val envIssue = wifiDirect.diagnoseEnvironment()
+        if (envIssue != WifiEnvironmentIssue.NONE) {
+            val mapped = mapWifiIssue(envIssue)
+            PttDiagnostics.warn("HostCreate", "Aborted in CHECKING: envIssue=$envIssue")
+            updateState {
+                it.copy(
+                    phase = PttPhase.DISCONNECTED,
+                    isHost = false,
+                    errorCode = mapped,
+                    diagnosticMessage = PttDiagnostics.lastSummary
+                )
             }
+            return false
         }
+
+        val hostPublicKey = hostPublicKeyProvider()
+        if (hostPublicKey == null || hostPublicKey.isEmpty()) {
+            PttDiagnostics.error("HostCreate", "Host identity unavailable: cannot advertise a verifiable pin")
+            updateState {
+                it.copy(
+                    phase = PttPhase.DISCONNECTED,
+                    isHost = false,
+                    errorCode = PttErrorCode.HOSTING_FAILED,
+                    diagnosticMessage = "Host identity (certificate) unavailable"
+                )
+            }
+            return false
+        }
+        val certificatePin = PttSecurity.computeCertificatePinIssuerFromEncoded(hostPublicKey)
 
         // ---- Phase 2: HOSTING (bind sockets & bring up P2P group + DNS-SD) ----
         val opGen = sessionOperationGen.incrementAndGet()
         val sid = PttSecurity.randomHex(12)
         val salt = PttSecurity.randomHex(16)
-        val derivedSessionKey = PttSecurity.deriveSessionKey(code, salt)
+        val derivedSessionKey = PttSecurity.deriveSessionKeyFromCertificate(hostPublicKey, sid, salt)
         val derivedMediaKey = PttSecurity.deriveMediaKey(derivedSessionKey, sid)
         val localHostId = "H_${settings.deviceId}"
         val sm = PttSessionManager(localParticipantId = localHostId, initialLocalName = name, isHostRole = true)
@@ -615,6 +626,8 @@ class PttRepository(
         synchronized(stateLock) {
             currentSessionId = sid
             currentSaltHex = salt
+            hostCertificatePin = certificatePin
+            hostPublicKeyBytes = hostPublicKey
             sessionKey = derivedSessionKey
             mediaKey = derivedMediaKey
             sessionManager = sm
@@ -627,7 +640,6 @@ class PttRepository(
                 phase = PttPhase.HOSTING,
                 isHost = true,
                 displayName = name,
-                channelCode = code,
                 negotiatedCodec = initialCodec,
                 errorCode = PttErrorCode.NONE
             )
@@ -647,7 +659,7 @@ class PttRepository(
         armConnectTimeout(HOSTING_SETUP_TIMEOUT_MS, timeoutError = PttErrorCode.HOSTING_FAILED)
         val actualTcpPort = tcpServer?.localPort ?: preferredHostTcpPort
 
-        val onHostingReady = { hotspotCreds: LocalHotspotCredentials? ->
+        val onHostingReady = { ->
             if (sessionOperationGen.get() == opGen && _state.value.phase == PttPhase.HOSTING) {
                 cancelConnectTimeout()
                 // ---- Phase 3: IN_SESSION (NOW and ONLY NOW start audio, watchdog, and ForegroundService!) ----
@@ -658,7 +670,6 @@ class PttRepository(
                         phase = PttPhase.IN_SESSION,
                         isHost = true,
                         displayName = name,
-                        channelCode = code,
                         buttonState = PttButtonVisualState.IDLE_BLUE,
                         activeSpeakerId = null,
                         activeSpeakerName = null,
@@ -667,7 +678,6 @@ class PttRepository(
                         pendingApprovals = emptyList(),
                         participants = sm.snapshotParticipants(),
                         connectedCount = sm.connectedCount(),
-                        hotspotInfo = hotspotCreds ?: it.hotspotInfo,
                         showSessionEndedBanner = false,
                         errorCode = PttErrorCode.NONE,
                         diagnosticMessage = ""
@@ -677,42 +687,25 @@ class PttRepository(
             }
         }
 
-        if (useLocalHotspotFallback) {
-            wifiDirect.startLocalOnlyHotspotFallback(
-                onReady = { ssid, pass ->
-                    onHostingReady(LocalHotspotCredentials(ssid, pass))
-                },
-                onError = { issue, diag ->
-                    if (sessionOperationGen.get() == opGen) {
-                        teardownSession(
-                            showEndedBanner = false,
-                            sendGoodbye = false,
-                            postError = mapWifiIssue(issue),
-                            diagnostic = diag
-                        )
-                    }
+        wifiDirect.startHostingGroup(
+            sessionId = sid,
+            hostDisplayName = name,
+            tcpPort = actualTcpPort,
+            certificatePin = certificatePin,
+            onReady = { _ ->
+                onHostingReady()
+            },
+            onError = { issue, diag ->
+                if (sessionOperationGen.get() == opGen) {
+                    teardownSession(
+                        showEndedBanner = false,
+                        sendGoodbye = false,
+                        postError = mapWifiIssue(issue),
+                        diagnostic = diag
+                    )
                 }
-            )
-        } else {
-            wifiDirect.startHostingGroup(
-                sessionId = sid,
-                hostDisplayName = name,
-                tcpPort = actualTcpPort,
-                onReady = { _ ->
-                    onHostingReady(null)
-                },
-                onError = { issue, diag ->
-                    if (sessionOperationGen.get() == opGen) {
-                        teardownSession(
-                            showEndedBanner = false,
-                            sendGoodbye = false,
-                            postError = mapWifiIssue(issue),
-                            diagnostic = diag
-                        )
-                    }
-                }
-            )
-        }
+            }
+        )
         return true
     }
 
@@ -744,8 +737,15 @@ class PttRepository(
                     authToken = token,
                     nowMs = now
                 )
+                // Key released ONLY now: bound to this specific approval nonce.
+                val approvedKey = PttProtocol.deriveApprovalKey(sKey, pending.approvalNonce)
+                // Media traffic must use the approval-bound key too, otherwise a guest that was only
+                // ever PENDING could still decode/emit voice. Every client gets its own nonce, so this
+                // is also a per-connection key rather than a shared session-wide one.
+                val approvedMediaKey = PttSecurity.deriveMediaKey(approvedKey, currentSessionId)
+                pending.approvedSessionKey = approvedKey
                 val hostProof = PttSecurity.computeHostAcceptProof(
-                    sessionKey = sKey,
+                    sessionKey = approvedKey,
                     sessionId = currentSessionId,
                     clientNonce = pending.clientNonce,
                     serverNonce = pending.serverNonce,
@@ -763,7 +763,7 @@ class PttRepository(
                     hostProofHex = hostProof,
                     roster = roster
                 )
-                PttProtocol.writeControlFrame(pending.socket.getOutputStream(), acceptedFrame, sKey)
+                PttProtocol.writeControlFrame(pending.socket.getOutputStream(), acceptedFrame, approvedKey)
                 pending.socket.soTimeout = 0
 
                 val clientConn = HostClientConn(
@@ -772,7 +772,9 @@ class PttRepository(
                     token = token,
                     socket = pending.socket,
                     remoteIp = pending.socket.inetAddress,
-                    remoteUdpPort = pending.clientUdpPort
+                    remoteUdpPort = pending.clientUdpPort,
+                    controlKey = approvedKey,
+                    mediaKey = approvedMediaKey
                 )
                 hostClients.put(clientConn.participantId, clientConn)?.close()
                 broadcastHostRoster()
@@ -897,13 +899,16 @@ class PttRepository(
         }
     }
 
-    fun requestJoinDiscoveredSession(session: DiscoveredPttSession, rawChannelCode: String): Boolean {
+    /**
+     * Guest join flow with NO channel code:
+     *  1. the candidate must be a VERIFIED advertisement (session id + certificate pin),
+     *  2. the guest joins the host's existing Wi-Fi Direct group,
+     *  3. the TCP handshake proves knowledge of the verified certificate,
+     *  4. the guest waits for the human approval, and only then gets a usable session key.
+     */
+    fun requestJoinDiscoveredSession(session: DiscoveredPttSession): Boolean {
         val name = settings.displayName.trim()
         if (name.isEmpty()) return false
-        if (!PttSettings.isValidChannelCode(rawChannelCode)) {
-            updateState { it.copy(errorCode = PttErrorCode.AUTH_FAILED) }
-            return false
-        }
         if (!permissionGate.hasAllCorePermissions()) {
             updateState { it.copy(errorCode = PttErrorCode.PERMISSION_MISSING) }
             return false
@@ -912,14 +917,21 @@ class PttRepository(
             updateState { it.copy(phase = PttPhase.DISCONNECTED, errorCode = PttErrorCode.WIFI_DISABLED) }
             return false
         }
+        if (!session.isVerifiedAppHost) {
+            updateState {
+                it.copy(
+                    phase = PttPhase.DISCONNECTED,
+                    errorCode = PttErrorCode.PROTOCOL_INCOMPATIBLE,
+                    diagnosticMessage = uiText?.invoke(R.string.ptt_diag_unverified_host)
+                        ?: "Only verified RMG hosts can be joined"
+                )
+            }
+            return false
+        }
 
         wifiDirect.stopSessionDiscovery()
-        val code = PttSettings.normalizeChannelCode(rawChannelCode)
-        settings.lastChannelCode = code
         sessionOperationGen.incrementAndGet()
         pendingTargetSession = session
-        pendingJoinChannelCode = code
-        pendingJoinViaHotspot = false
         tcpDialInProgress.set(false)
         micForegroundEligibleInSession = isAppInForeground && permissionGate.hasRecordAudioPermission()
 
@@ -928,7 +940,6 @@ class PttRepository(
                 phase = PttPhase.CONNECTING,
                 connectingRadioLinked = false,
                 isHost = false,
-                channelCode = code,
                 showSessionEndedBanner = false,
                 errorCode = PttErrorCode.NONE,
                 diagnosticMessage = ""
@@ -938,7 +949,7 @@ class PttRepository(
 
         wifiDirect.connectToSession(
             session = session,
-            onInitiated = { /* P2P connection broadcast / link poll will invoke dialHostControlChannel */ },
+            onInitiated = { /* the link poll / broadcast then dials the control channel */ },
             onFailed = { issue, diag ->
                 val mapped = mapWifiIssue(issue)
                 teardownSession(
@@ -949,74 +960,6 @@ class PttRepository(
                 )
             }
         )
-        return true
-    }
-
-    /**
-     * Separate, explicit join flow for Local-Only Hotspot fallback ONLY.
-     * Clearly distinguishes:
-     *  • Real Wi-Fi adapter OFF -> [PttErrorCode.WIFI_DISABLED]
-     *  • Wi-Fi ON, but phone not connected to the Host's Local Hotspot -> [PttErrorCode.HOTSPOT_NOT_CONNECTED]
-     */
-    fun requestJoinLocalHotspotGateway(rawChannelCode: String, explicitPort: Int = preferredHostTcpPort): Boolean {
-        val name = settings.displayName.trim()
-        if (name.isEmpty()) return false
-        if (!PttSettings.isValidChannelCode(rawChannelCode)) {
-            updateState { it.copy(errorCode = PttErrorCode.AUTH_FAILED) }
-            return false
-        }
-        if (!permissionGate.hasAllCorePermissions()) {
-            updateState { it.copy(errorCode = PttErrorCode.PERMISSION_MISSING) }
-            return false
-        }
-
-        val gwIp = when (val gwCheck = wifiDirect.checkLocalHotspotGateway()) {
-            is LocalHotspotGatewayCheck.WifiTurnedOff -> {
-                updateState {
-                    it.copy(
-                        phase = PttPhase.DISCONNECTED,
-                        errorCode = PttErrorCode.WIFI_DISABLED,
-                        diagnosticMessage = "Wi-Fi is turned off"
-                    )
-                }
-                return false
-            }
-            is LocalHotspotGatewayCheck.NotConnectedToHotspot -> {
-                updateState {
-                    it.copy(
-                        phase = PttPhase.DISCONNECTED,
-                        errorCode = PttErrorCode.HOTSPOT_NOT_CONNECTED,
-                        diagnosticMessage = "No active Wi-Fi Local Hotspot gateway detected"
-                    )
-                }
-                return false
-            }
-            is LocalHotspotGatewayCheck.Ready -> gwCheck.gatewayIp
-        }
-
-        wifiDirect.stopSessionDiscovery()
-        val code = PttSettings.normalizeChannelCode(rawChannelCode)
-        settings.lastChannelCode = code
-        sessionOperationGen.incrementAndGet()
-        pendingTargetSession = null
-        pendingJoinChannelCode = code
-        pendingJoinViaHotspot = true
-        tcpDialInProgress.set(false)
-        micForegroundEligibleInSession = isAppInForeground && permissionGate.hasRecordAudioPermission()
-
-        updateState {
-            it.copy(
-                phase = PttPhase.CONNECTING,
-                connectingRadioLinked = true,
-                isHost = false,
-                channelCode = code,
-                showSessionEndedBanner = false,
-                errorCode = PttErrorCode.NONE,
-                diagnosticMessage = ""
-            )
-        }
-        armConnectTimeout(TCP_HANDSHAKE_TIMEOUT_MS, timeoutError = PttErrorCode.CONNECT_TIMEOUT)
-        dialHostControlChannel(gwIp, explicitPort)
         return true
     }
 
@@ -1188,7 +1131,7 @@ class PttRepository(
             udpRunning.set(false)
             tcpDialInProgress.set(false)
             pendingTargetSession = null
-            pendingJoinViaHotspot = false
+            pendingApprovalNonce = ""
 
             // 2. Cancel discovery, connection waits, and periodic timers
             cancelConnectTimeout()
@@ -1241,6 +1184,8 @@ class PttRepository(
                 sessionManager = null
                 currentSessionId = ""
                 currentSaltHex = ""
+                hostCertificatePin = ""
+                hostPublicKeyBytes = ByteArray(0)
                 sessionKey?.fill(0)
                 mediaKey?.fill(0)
                 sessionKey = null
@@ -1254,8 +1199,7 @@ class PttRepository(
                 discoveryState = if (postError == PttErrorCode.DISCOVERY_FAILED) PttDiscoveryState.FAILED else PttDiscoveryState.IDLE,
                 isHost = false,
                 displayName = settings.displayName,
-                channelCode = settings.lastChannelCode,
-                talkMode = settings.talkMode,
+                    talkMode = settings.talkMode,
                 rogerBeepEnabled = settings.rogerBeepEnabled,
                 buttonState = PttButtonVisualState.IDLE_BLUE,
                 activeSpeakerId = null,
@@ -1266,7 +1210,6 @@ class PttRepository(
                 pendingApprovals = emptyList(),
                 participants = emptyList(),
                 connectedCount = 0,
-                hotspotInfo = null,
                 showSessionEndedBanner = showEndedBanner,
                 errorCode = postError,
                 diagnosticMessage = diagnostic.ifBlank { if (postError != PttErrorCode.NONE) PttDiagnostics.lastSummary else "" }
@@ -1381,10 +1324,14 @@ class PttRepository(
             }
 
             val serverNonce = PttSecurity.randomHex(16)
+            val hostSpkiHex = hostPublicKeyBytes.takeIf { it.isNotEmpty() }
+                ?.let { PttProtocol.toHex(it) }.orEmpty()
             val challenge = PttProtocol.ControlFrame.HelloChallenge(
                 protocolVersion = PttProtocol.PROTOCOL_VERSION,
                 sessionId = currentSessionId,
                 sessionSaltHex = currentSaltHex,
+                hostPublicKeyHex = hostSpkiHex,
+                hostPublicKeyHashHex = hostCertificatePin,
                 serverNonce = serverNonce,
                 hostId = sm.localParticipantId,
                 hostName = settings.displayName,
@@ -1397,7 +1344,10 @@ class PttRepository(
                 socket.close()
                 return
             }
-            if (response.protocolVersion != PttProtocol.PROTOCOL_VERSION || response.sessionId != currentSessionId) {
+            if (response.protocolVersion != PttProtocol.PROTOCOL_VERSION ||
+                response.sessionId != currentSessionId ||
+                !response.hostPublicKeyHashHex.equals(hostCertificatePin, ignoreCase = true)
+            ) {
                 PttProtocol.writeControlFrame(
                     socket.getOutputStream(),
                     PttProtocol.ControlFrame.JoinRejected(PttRejectReason.PROTOCOL_MISMATCH)
@@ -1424,9 +1374,12 @@ class PttRepository(
                 return
             }
 
+            // The approval nonce is what turns a verified request into a usable key: nothing secret is
+            // released before the host taps Accept.
+            val approvalNonce = PttSecurity.randomHex(16)
             PttProtocol.writeControlFrame(
                 socket.getOutputStream(),
-                PttProtocol.ControlFrame.JoinPendingApproval(currentSessionId),
+                PttProtocol.ControlFrame.JoinPendingApproval(currentSessionId, approvalNonce),
                 macKey = sKey
             )
             socket.soTimeout = APPROVAL_TIMEOUT_MS.toInt()
@@ -1437,7 +1390,8 @@ class PttRepository(
                 requestId = reqId,
                 participantId = participantId,
                 displayName = response.displayName.trim().ifBlank { "Guest" },
-                deviceFingerprint = PttSecurity.shortDeviceFingerprint(response.deviceId)
+                deviceFingerprint = PttSecurity.shortDeviceFingerprint(response.deviceId),
+                deviceAddress = socket.inetAddress?.hostAddress.orEmpty()
             )
             pendingJoinMap[reqId] = PendingJoinConn(
                 approval = approval,
@@ -1445,7 +1399,8 @@ class PttRepository(
                 clientNonce = response.clientNonce,
                 serverNonce = serverNonce,
                 clientCodecMask = response.supportedCodecMask,
-                clientUdpPort = response.udpListenPort
+                clientUdpPort = response.udpListenPort,
+                approvalNonce = approvalNonce
             )
             refreshPendingApprovalsState()
         } catch (t: Throwable) {
@@ -1457,7 +1412,7 @@ class PttRepository(
     private fun runHostClientReadLoop(conn: HostClientConn) {
         try {
             while (conn.alive.get() && _state.value.phase == PttPhase.IN_SESSION) {
-                val frame = PttProtocol.readControlFrame(conn.socket.getInputStream(), macKey = sessionKey, requireMac = true)
+                val frame = PttProtocol.readControlFrame(conn.socket.getInputStream(), macKey = conn.controlKey, requireMac = true)
                 val sm = sessionManager ?: break
                 val now = clockMs()
                 sm.recordHeartbeat(conn.participantId, null, null, now)
@@ -1561,7 +1516,7 @@ class PttRepository(
                     if (hostIp.isNotBlank() && hostIp != "0.0.0.0") add(hostIp)
                     val hint = pendingTargetSession?.groupOwnerIpHint.orEmpty()
                     if (hint.isNotBlank() && hint != "0.0.0.0") add(hint)
-                    if (!pendingJoinViaHotspot) {
+                    run {
                         // Wi-Fi Direct always uses 192.168.49.1 as the Group Owner address on Android;
                         // add it (plus the first IPv4 address of this device on the p2p interface) so a
                         // missing `groupOwnerAddress` from the framework never blocks the TCP handshake.
@@ -1597,8 +1552,7 @@ class PttRepository(
                             candidate.tcpNoDelay = true
                             val boundViaNet = wifiDirect.bindSocketToRadioNetwork(
                                 socket = candidate,
-                                remoteIp = candidateIp,
-                                viaLocalHotspot = pendingJoinViaHotspot
+                                remoteIp = candidateIp
                             )
                             if (!boundViaNet) {
                                 bindSocketToMatchingP2pSubnetIfPresent(candidate, candidateIp)
@@ -1639,6 +1593,7 @@ class PttRepository(
                 PttDiagnostics.info("ClientDial", "TCP connected to $connectedTargetIp:$tcpPort; awaiting HelloChallenge")
 
                 val localUdpBindAddr = findLocalInterfaceAddressForTarget(connectedTargetIp)
+                    ?: findP2pInterfaceLocalAddress()?.let { java.net.InetAddress.getByName(it) as? Inet4Address }
                 val udp = if (localUdpBindAddr != null && connectedTargetIp != "127.0.0.1" && connectedTargetIp != "localhost") {
                     try {
                         DatagramSocket(InetSocketAddress(localUdpBindAddr, 0))
@@ -1648,7 +1603,6 @@ class PttRepository(
                 } else {
                     DatagramSocket(0)
                 }
-                wifiDirect.bindDatagramToRadioNetwork(udp, connectedTargetIp, pendingJoinViaHotspot)
                 udpSocket = udp
                 udpRunning.set(true)
 
@@ -1676,12 +1630,64 @@ class PttRepository(
                     return@execute
                 }
 
-                val derivedSessionKey = PttSecurity.deriveSessionKey(pendingJoinChannelCode, challenge.sessionSaltHex)
-                val derivedMediaKey = PttSecurity.deriveMediaKey(derivedSessionKey, challenge.sessionId)
+                // ---- Identity verification (replaces the removed channel code) ----
+                val expectedPin = pendingTargetSession?.hostCertificatePin.orEmpty().lowercase()
+                val offeredPin = challenge.hostPublicKeyHashHex.lowercase()
+                if (expectedPin.isBlank() || offeredPin != expectedPin) {
+                    val diag = "[Verify] Host certificate pin mismatch (expected=${expectedPin.take(12)}…, offered=${offeredPin.take(12)}…)"
+                    PttDiagnostics.error("ClientDial", diag)
+                    teardownSession(
+                        showEndedBanner = false,
+                        sendGoodbye = false,
+                        postError = PttErrorCode.AUTH_FAILED,
+                        diagnostic = diag
+                    )
+                    return@execute
+                }
+                val offeredSpki = try {
+                    PttProtocol.fromHex(challenge.hostPublicKeyHex)
+                } catch (_: Throwable) {
+                    ByteArray(0)
+                }
+                if (offeredSpki.isEmpty() ||
+                    !PttSecurity.computeCertificatePinIssuerFromEncoded(offeredSpki).equals(expectedPin, ignoreCase = true)
+                ) {
+                    val diag = "[Verify] Host public key does not match its advertised pin"
+                    PttDiagnostics.error("ClientDial", diag)
+                    teardownSession(
+                        showEndedBanner = false,
+                        sendGoodbye = false,
+                        postError = PttErrorCode.AUTH_FAILED,
+                        diagnostic = diag
+                    )
+                    return@execute
+                }
+                val verifiedHostPublicKeyBytes = offeredSpki
+                if (challenge.sessionId != pendingTargetSession?.sessionId) {
+                    val diag = "[Verify] Reached a different session than advertised (${challenge.sessionId.take(8)} vs ${pendingTargetSession?.sessionId?.take(8)})"
+                    PttDiagnostics.error("ClientDial", diag)
+                    teardownSession(
+                        showEndedBanner = false,
+                        sendGoodbye = false,
+                        postError = PttErrorCode.AUTH_FAILED,
+                        diagnostic = diag
+                    )
+                    return@execute
+                }
+
+                val derivedBaseKey = PttProtocol.deriveSessionKeyFromCertificate(
+                    // Both sides derive from the same raw SPKI bytes: the host from its own Keystore
+                    // key, the guest from the SPKI it verified against the advertised pin below.
+                    hostPublicKeyBytes = verifiedHostPublicKeyBytes,
+                    sessionId = challenge.sessionId,
+                    sessionSaltHex = challenge.sessionSaltHex
+                )
+                val derivedSessionKey = derivedBaseKey
+                val derivedMediaKey = PttSecurity.deriveMediaKey(derivedBaseKey, challenge.sessionId)
                 val clientNonce = PttSecurity.randomHex(16)
                 val myName = settings.displayName.trim()
                 val proof = PttSecurity.computeClientJoinProof(
-                    sessionKey = derivedSessionKey,
+                    sessionKey = derivedBaseKey,
                     sessionId = challenge.sessionId,
                     serverNonce = challenge.serverNonce,
                     clientNonce = clientNonce,
@@ -1692,6 +1698,7 @@ class PttRepository(
                 val joinReq = PttProtocol.ControlFrame.JoinRequest(
                     protocolVersion = PttProtocol.PROTOCOL_VERSION,
                     sessionId = challenge.sessionId,
+                    hostPublicKeyHashHex = offeredPin,
                     clientNonce = clientNonce,
                     deviceId = settings.deviceId,
                     displayName = myName,
@@ -1700,22 +1707,24 @@ class PttRepository(
                     clientProofHex = proof
                 )
                 PttProtocol.writeControlFrame(sock.getOutputStream(), joinReq, macKey = null)
-                PttDiagnostics.info("ClientDial", "JoinRequest sent; awaiting channel auth & host approval")
+                PttDiagnostics.info("ClientDial", "JoinRequest sent; awaiting host approval")
 
-                var nextFrame = PttProtocol.readControlFrame(sock.getInputStream(), macKey = derivedSessionKey, requireMac = false)
+                var nextFrame = PttProtocol.readControlFrame(sock.getInputStream(), macKey = null, requireMac = false)
                 if (nextFrame is PttProtocol.ControlFrame.JoinPendingApproval) {
-                    PttDiagnostics.info("ClientDial", "Channel code verified! Waiting for manual Host approval")
+                    PttDiagnostics.info("ClientDial", "Host received the request; WAITING for manual approval")
+                    pendingApprovalNonce = nextFrame.approvalNonceHex
                     updateState { it.copy(phase = PttPhase.WAITING_APPROVAL) }
                     armConnectTimeout(APPROVAL_TIMEOUT_MS, timeoutError = PttErrorCode.APPROVAL_TIMEOUT)
                     sock.soTimeout = APPROVAL_TIMEOUT_MS.toInt()
                     nextFrame = try {
-                        PttProtocol.readControlFrame(sock.getInputStream(), macKey = derivedSessionKey, requireMac = false)
+                        PttProtocol.readControlFrame(sock.getInputStream(), macKey = null, requireMac = false)
                     } catch (ste: java.net.SocketTimeoutException) {
                         teardownSession(
                             showEndedBanner = false,
                             sendGoodbye = false,
                             postError = PttErrorCode.APPROVAL_TIMEOUT,
-                            diagnostic = "[Approval] Host did not respond within timeout"
+                            diagnostic = uiText?.invoke(R.string.ptt_diag_approval_timeout)
+                                ?: "[Approval] Host did not respond within timeout"
                         )
                         return@execute
                     }
@@ -1729,10 +1738,10 @@ class PttRepository(
                             else -> PttErrorCode.REJECTED_BY_HOST
                         }
                         val diag = when (err) {
-                            // Radio + TCP + protocol all succeeded: the ONLY failing element is the code.
+                            // Radio + TCP + protocol all succeeded: the failing element is identity/proof.
                             PttErrorCode.AUTH_FAILED ->
-                                uiText?.invoke(R.string.ptt_diag_channel_code_rejected)
-                                    ?: "[ChannelAuth] Wi-Fi Direct link and TCP reached the host, but the channel code did not match"
+                                uiText?.invoke(R.string.ptt_diag_identity_proof_rejected)
+                                    ?: "[Identity] Wi-Fi Direct link and TCP reached the host, but the host rejected this device's proof"
                             PttErrorCode.PROTOCOL_INCOMPATIBLE ->
                                 "[Protocol] Host runs a different Walkie-Talkie protocol version"
                             else -> "[Join] Host rejected the request (code=${nextFrame.reasonCode})"
@@ -1743,8 +1752,26 @@ class PttRepository(
                     }
 
                     is PttProtocol.ControlFrame.JoinAccepted -> {
+                        if (pendingApprovalNonce.isBlank()) {
+                            // Never accept an "accepted" frame that skipped the approval step.
+                            PttDiagnostics.error("ClientDial", "[Approval] JoinAccepted received without a prior approval challenge")
+                            teardownSession(
+                                showEndedBanner = false,
+                                sendGoodbye = false,
+                                postError = PttErrorCode.AUTH_FAILED,
+                                diagnostic = "[Approval] Missing approval nonce"
+                            )
+                            return@execute
+                        }
+                        val approvedSessionKey = PttProtocol.deriveApprovalKey(derivedBaseKey, pendingApprovalNonce)
+                        val approvedMediaKey = PttSecurity.deriveMediaKey(approvedSessionKey, challenge.sessionId)
+                        synchronized(stateLock) {
+                            sessionKey = approvedSessionKey
+                            mediaKey = approvedMediaKey
+                            currentSaltHex = challenge.sessionSaltHex
+                        }
                         val validHost = PttSecurity.verifyHostAcceptProof(
-                            sessionKey = derivedSessionKey,
+                            sessionKey = approvedSessionKey,
                             sessionId = challenge.sessionId,
                             clientNonce = clientNonce,
                             serverNonce = challenge.serverNonce,
@@ -1772,14 +1799,13 @@ class PttRepository(
                             participantToken = nextFrame.participantToken,
                             socket = sock,
                             hostAddress = hostAddr,
-                            hostUdpPort = nextFrame.hostUdpPort
+                            hostUdpPort = nextFrame.hostUdpPort,
+                            controlKey = approvedSessionKey
                         )
 
                         synchronized(stateLock) {
                             currentSessionId = challenge.sessionId
                             currentSaltHex = challenge.sessionSaltHex
-                            sessionKey = derivedSessionKey
-                            mediaKey = derivedMediaKey
                             negotiatedCodec = codec
                             sessionManager = sm
                             clientControlConn = ctrlConn
@@ -1811,7 +1837,12 @@ class PttRepository(
                     }
 
                     else -> {
-                        teardownSession(showEndedBanner = false, sendGoodbye = false, postError = PttErrorCode.CONNECT_TIMEOUT)
+                        val diag = "[Handshake] Unexpected frame from host after JoinRequest: ${nextFrame.javaClass.simpleName}"
+                        PttDiagnostics.error("ClientDial", diag)
+                        teardownSession(
+                            showEndedBanner = false, sendGoodbye = false,
+                            postError = PttErrorCode.PROTOCOL_INCOMPATIBLE, diagnostic = diag
+                        )
                     }
                 }
             } catch (t: Throwable) {
@@ -1891,7 +1922,7 @@ class PttRepository(
     private fun runClientControlReadLoop(conn: ClientControlConn) {
         try {
             while (conn.alive.get() && _state.value.phase == PttPhase.IN_SESSION) {
-                val frame = PttProtocol.readControlFrame(conn.socket.getInputStream(), macKey = sessionKey, requireMac = true)
+                val frame = PttProtocol.readControlFrame(conn.socket.getInputStream(), macKey = conn.controlKey, requireMac = true)
                 val sm = sessionManager ?: break
                 val now = clockMs()
                 sm.snapshotParticipants().firstOrNull { it.isHost }?.let { hostPeer ->
@@ -1982,9 +2013,18 @@ class PttRepository(
             try {
                 dp.length = buf.size
                 sock.receive(dp)
-                val mKey = mediaKey ?: continue
                 val sm = sessionManager ?: continue
-                val decoded = PttProtocol.decodeUdpVoicePacket(mKey, dp.data, dp.length) ?: continue
+                // Each guest has its own approval-bound media key: try the sender's key first, then fall
+                // back to the host's own key (the host sends with it), and finally to any live client key.
+                val candidateKeys = ArrayList<ByteArray>(hostClients.size + 1)
+                hostClients.values.forEach { candidateKeys.add(it.mediaKey) }
+                mediaKey?.let { candidateKeys.add(it) }
+                var decoded: PttProtocol.UdpVoicePacket? = null
+                for (k in candidateKeys) {
+                    decoded = PttProtocol.decodeUdpVoicePacket(k, dp.data, dp.length)
+                    if (decoded != null) break
+                }
+                decoded ?: continue
                 val senderId = sm.resolveParticipantIdByShortHash(decoded.senderShortHash) ?: continue
 
                 if (isHostMode) {
@@ -2181,7 +2221,6 @@ class PttRepository(
         WifiEnvironmentIssue.MISSING_PERMISSION -> PttErrorCode.PERMISSION_MISSING
         WifiEnvironmentIssue.HOSTING_GROUP_FAILED -> PttErrorCode.HOSTING_FAILED
         WifiEnvironmentIssue.DISCOVERY_FAILED -> PttErrorCode.DISCOVERY_FAILED
-        WifiEnvironmentIssue.HOTSPOT_START_FAILED -> PttErrorCode.HOTSPOT_START_FAILED
         WifiEnvironmentIssue.P2P_LINK_FAILED -> PttErrorCode.P2P_LINK_FAILED
         WifiEnvironmentIssue.CONNECT_FAILED -> PttErrorCode.CONNECT_TIMEOUT
     }

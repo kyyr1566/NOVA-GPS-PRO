@@ -171,7 +171,6 @@ class PttService : Service() {
 
         val bodyText = locCtx.getString(
             R.string.ptt_notif_body_fmt,
-            state.channelCode.ifBlank { "—" },
             state.connectedCount,
             currentStatusText
         )

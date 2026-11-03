@@ -6,7 +6,6 @@ import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.location.LocationManager
 import android.os.Build
-import java.security.SecureRandom
 import java.util.Locale
 import java.util.UUID
 
@@ -23,7 +22,6 @@ interface PttSettingsStore {
     var talkMode: TalkMode
     var rogerBeepEnabled: Boolean
     var permissionRationaleShown: Boolean
-    var lastChannelCode: String
 }
 
 /** Persistent Walkie-Talkie preferences backed by SharedPreferences. */
@@ -61,12 +59,6 @@ class PttSettings(context: Context) : PttSettingsStore {
             prefs.edit().putBoolean(KEY_RATIONALE_SHOWN, value).apply()
         }
 
-    override var lastChannelCode: String
-        get() = prefs.getString(KEY_LAST_CHANNEL, "")?.trim().orEmpty()
-        set(value) {
-            prefs.edit().putString(KEY_LAST_CHANNEL, normalizeChannelCode(value)).apply()
-        }
-
     companion object {
         const val PREFS_NAME = "nova_ptt_prefs"
         private const val KEY_DEVICE_ID = "device_id"
@@ -74,26 +66,6 @@ class PttSettings(context: Context) : PttSettingsStore {
         private const val KEY_TALK_MODE = "talk_mode"
         private const val KEY_ROGER_BEEP = "roger_beep"
         private const val KEY_RATIONALE_SHOWN = "perm_rationale_shown"
-        private const val KEY_LAST_CHANNEL = "last_channel_code"
-
-        private const val CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-        private val CHANNEL_REGEX = Regex("^[A-Za-z0-9]{4,8}$")
-        private val rng = SecureRandom()
-
-        fun normalizeChannelCode(raw: String): String =
-            raw.trim().uppercase(Locale.US)
-
-        fun isValidChannelCode(raw: String): Boolean =
-            CHANNEL_REGEX.matches(raw.trim())
-
-        fun generateChannelCode(length: Int = 6): String {
-            val safeLen = length.coerceIn(4, 8)
-            val sb = StringBuilder(safeLen)
-            repeat(safeLen) {
-                sb.append(CODE_ALPHABET[rng.nextInt(CODE_ALPHABET.length)])
-            }
-            return sb.toString()
-        }
     }
 }
 
@@ -103,8 +75,7 @@ class InMemoryPttSettings(
     override var displayName: String = "Tester",
     override var talkMode: TalkMode = TalkMode.HOLD_TO_TALK,
     override var rogerBeepEnabled: Boolean = true,
-    override var permissionRationaleShown: Boolean = false,
-    override var lastChannelCode: String = "RMG742"
+    override var permissionRationaleShown: Boolean = false
 ) : PttSettingsStore
 
 /**

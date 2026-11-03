@@ -9,7 +9,6 @@ import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.wifi.WifiManager
 import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
@@ -20,7 +19,6 @@ import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceRequest
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import java.net.DatagramSocket
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.net.Socket
@@ -39,8 +37,18 @@ data class DiscoveredPttSession(
     val discoveredViaFallback: Boolean = false,
     val groupOwnerIpHint: String = "",
     val groupNetworkName: String = "",
-    val groupPassphrase: String = ""
+    val groupPassphrase: String = "",
+    /** SHA-256 (hex) of the host certificate public key, advertised in the DNS-SD TXT `fp` field. */
+    val hostCertificatePin: String = ""
 ) {
+    /**
+     * A candidate may only be offered as a VERIFIED RMG host when the advertisement itself carries
+     * the signed identity (session id + certificate pin) — never for a bare P2P peer that merely
+     * happens to be nearby and is running some other Wi-Fi Direct app.
+     */
+    val isVerifiedAppHost: Boolean
+        get() = sessionId.isNotBlank() && hostCertificatePin.isNotBlank() && protocolVersion == PttProtocol.PROTOCOL_VERSION
+
     /**
      * True only when this record can actually be joined over an EXISTING Wi-Fi Direct group
      * because the host advertised a valid `DIRECT-...` SSID + WPA2 passphrase pair.
@@ -68,15 +76,8 @@ enum class WifiEnvironmentIssue {
     MISSING_PERMISSION,
     HOSTING_GROUP_FAILED,
     DISCOVERY_FAILED,
-    HOTSPOT_START_FAILED,
     P2P_LINK_FAILED,
     CONNECT_FAILED
-}
-
-sealed class LocalHotspotGatewayCheck {
-    data class Ready(val gatewayIp: String) : LocalHotspotGatewayCheck()
-    data object WifiTurnedOff : LocalHotspotGatewayCheck()
-    data object NotConnectedToHotspot : LocalHotspotGatewayCheck()
 }
 
 /**
@@ -89,7 +90,6 @@ interface PttRadioTransport {
         fun onDiscoveryFinishedEmpty()
         fun onP2pLinkEstablished(isGroupOwner: Boolean, groupOwnerIp: String)
         fun onP2pLinkDisconnected()
-        fun onLocalHotspotStarted(ssid: String, passphrase: String)
         fun onTransportFailure(issue: WifiEnvironmentIssue, diagnostic: String = "")
     }
 
@@ -97,18 +97,14 @@ interface PttRadioTransport {
 
     fun isWifiEnabled(): Boolean
     fun diagnoseEnvironment(): WifiEnvironmentIssue
-    fun checkLocalHotspotGateway(): LocalHotspotGatewayCheck
 
     fun startHostingGroup(
         sessionId: String,
         hostDisplayName: String,
         tcpPort: Int,
+        /** Certificate pin (SHA-256 hex of the host SPKI) published so guests can verify identity. */
+        certificatePin: String,
         onReady: (groupOwnerIp: String) -> Unit,
-        onError: (WifiEnvironmentIssue, String) -> Unit
-    )
-
-    fun startLocalOnlyHotspotFallback(
-        onReady: (ssid: String, passphrase: String) -> Unit,
         onError: (WifiEnvironmentIssue, String) -> Unit
     )
 
@@ -138,12 +134,7 @@ interface PttRadioTransport {
      * Binds a TCP [Socket] to the active local Wi-Fi / P2P network so Android's fwmark router
      * never misroutes offline packets over mobile cellular data (4G/5G).
      */
-    fun bindSocketToRadioNetwork(socket: Socket, remoteIp: String, viaLocalHotspot: Boolean): Boolean = false
-
-    /**
-     * Binds a UDP [DatagramSocket] to the active local Wi-Fi network when operating over Local Hotspot.
-     */
-    fun bindDatagramToRadioNetwork(socket: DatagramSocket, remoteIp: String, viaLocalHotspot: Boolean): Boolean = false
+    fun bindSocketToRadioNetwork(socket: Socket, remoteIp: String): Boolean = false
 
     fun teardownRadio()
 }
@@ -225,7 +216,7 @@ class MainLooperTaskScheduler : PttTaskScheduler {
 }
 
 /**
- * Production Android Wi-Fi Direct + Local-Only Hotspot transport controller.
+ * Production Android Wi-Fi Direct (WifiP2pManager ONLY) transport controller.
  * Strictly zero Bluetooth and zero internet / cloud calls.
  */
 class WifiDirectManager(
@@ -233,6 +224,14 @@ class WifiDirectManager(
     private val customDriver: P2pDriver? = null,
     private val scheduler: PttTaskScheduler = MainLooperTaskScheduler()
 ) : PttRadioTransport {
+
+    /**
+     * The host's certificate pin, captured at `startHostingGroup` and repeated in every DNS-SD TXT
+     * record so a guest can verify the exact host session before sending a join proof.
+     */
+    @Volatile
+    private var activeHostCertificatePin: String = ""
+
 
     companion object {
         const val REASON_ERROR = 0
@@ -245,6 +244,8 @@ class WifiDirectManager(
         private const val PEER_FALLBACK_DURATION_MS = 3_000L
         private const val GROUP_FORM_TIMEOUT_MS = 9_000L
         private const val HOST_CREDENTIAL_MAX_ATTEMPTS = 3
+        /** An advertisement that is not refreshed within this window is no longer offered to the user. */
+        private const val ADVERT_STALE_MS = 45_000L
 
         // Client P2P radio association windows (Direct SSID/PSK fast path + MAC PBC fallback)
         private const val DIRECT_CRED_LINK_TIMEOUT_MS = 8_000L
@@ -276,11 +277,6 @@ class WifiDirectManager(
      */
     var clientStateObserver: (() -> Boolean)? = null
 
-    private val wifiManager: WifiManager? = try {
-        appCtx?.applicationContext?.getSystemService(WifiManager::class.java)
-    } catch (_: Throwable) {
-        null
-    }
     private val connectivityManager: ConnectivityManager? = try {
         appCtx?.getSystemService(ConnectivityManager::class.java)
     } catch (_: Throwable) {
@@ -289,7 +285,6 @@ class WifiDirectManager(
 
     private val driver: P2pDriver = customDriver ?: AndroidP2pDriver(appCtx!!)
 
-    private var hotspotReservation: WifiManager.LocalOnlyHotspotReservation? = null
     private val receiverRegistered = AtomicBoolean(false)
     private val scanning = AtomicBoolean(false)
     private val hostingActive = AtomicBoolean(false)
@@ -393,18 +388,6 @@ class WifiDirectManager(
         return WifiEnvironmentIssue.NONE
     }
 
-    override fun checkLocalHotspotGateway(): LocalHotspotGatewayCheck {
-        if (!driver.isWifiEnabled()) {
-            return LocalHotspotGatewayCheck.WifiTurnedOff
-        }
-        val gw = resolveConnectedWifiGatewayIp()
-        return if (!gw.isNullOrBlank()) {
-            LocalHotspotGatewayCheck.Ready(gw)
-        } else {
-            LocalHotspotGatewayCheck.NotConnectedToHotspot
-        }
-    }
-
     /**
      * Sequenced Host startup:
      * 1. Pre-flight verification (permissions, Wi-Fi ON, Location toggle on API 30–32)
@@ -420,10 +403,12 @@ class WifiDirectManager(
         sessionId: String,
         hostDisplayName: String,
         tcpPort: Int,
+        certificatePin: String,
         onReady: (groupOwnerIp: String) -> Unit,
         onError: (WifiEnvironmentIssue, String) -> Unit
     ) {
         val gen = operationGen.incrementAndGet()
+        activeHostCertificatePin = certificatePin
         cancelScheduledTasks()
         scanning.set(false)
         connectInProgress.set(false)
@@ -445,11 +430,20 @@ class WifiDirectManager(
         }
         ensureReceiverRegistered()
 
+        if (certificatePin.isBlank()) {
+            // Without a pin the guest cannot verify the host identity -> refuse to advertise.
+            hostingActive.set(false)
+            PttDiagnostics.error("HostStart", "Refusing to advertise a session without a certificate pin")
+            onError(WifiEnvironmentIssue.HOSTING_GROUP_FAILED, "Missing host certificate pin")
+            return
+        }
+
         val baseTxtRecord = linkedMapOf(
             "v" to PttProtocol.PROTOCOL_VERSION.toString(),
             "sid" to sessionId.take(20),
             "host" to hostDisplayName.take(24),
-            "port" to tcpPort.toString()
+            "port" to tcpPort.toString(),
+            "fp" to certificatePin.take(64)
         )
 
         PttDiagnostics.info("HostStart", "Preparing P2P host group for sid=${sessionId.take(8)} port=$tcpPort")
@@ -671,122 +665,10 @@ class WifiDirectManager(
     }
 
     /**
-     * Explicit offline Android Local-Only Hotspot mode (zero internet routing, zero Bluetooth).
+     * Resolves the Android [Network] that carries the Wi-Fi Direct group. Offline P2P traffic must be
+     * bound to this network explicitly, otherwise the fwmark router can push it over mobile data.
      */
-    @SuppressLint("MissingPermission")
-    override fun startLocalOnlyHotspotFallback(
-        onReady: (ssid: String, passphrase: String) -> Unit,
-        onError: (WifiEnvironmentIssue, String) -> Unit
-    ) {
-        val ctx = appCtx
-        val wm = wifiManager
-        if (ctx == null || wm == null) {
-            onError(WifiEnvironmentIssue.HOTSPOT_START_FAILED, "WifiManager unavailable")
-            return
-        }
-        if (!PttPermissions.hasWifiDirectDiscoveryPermission(ctx)) {
-            onError(WifiEnvironmentIssue.MISSING_PERMISSION, "Missing nearby/location permission for LocalHotspot")
-            return
-        }
-        if (!driver.isWifiEnabled()) {
-            onError(WifiEnvironmentIssue.WIFI_DISABLED, "Wi-Fi disabled before starting LocalHotspot")
-            return
-        }
-        if (PttPermissions.isLocationToggleRequiredButOff(ctx)) {
-            onError(WifiEnvironmentIssue.LOCATION_TOGGLE_OFF, "Location toggle off on Android 11/12")
-            return
-        }
-        try {
-            closeHotspotReservation()
-            wm.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
-                override fun onStarted(reservation: WifiManager.LocalOnlyHotspotReservation?) {
-                    hotspotReservation = reservation
-                    @Suppress("DEPRECATION")
-                    val ssid = reservation?.softApConfiguration?.ssid
-                        ?: reservation?.wifiConfiguration?.SSID?.trim('"')
-                        ?: "RMG-PTT"
-                    @Suppress("DEPRECATION")
-                    val pass = reservation?.softApConfiguration?.passphrase
-                        ?: reservation?.wifiConfiguration?.preSharedKey?.trim('"')
-                        ?: ""
-                    PttDiagnostics.info("Hotspot", "LocalOnlyHotspot started: SSID=$ssid")
-                    listener?.onLocalHotspotStarted(ssid, pass)
-                    onReady(ssid, pass)
-                }
-
-                override fun onFailed(reason: Int) {
-                    val issue = if (!driver.isWifiEnabled()) {
-                        WifiEnvironmentIssue.WIFI_DISABLED
-                    } else {
-                        WifiEnvironmentIssue.HOTSPOT_START_FAILED
-                    }
-                    val diag = "LocalOnlyHotspot failed with reason=$reason"
-                    PttDiagnostics.error("Hotspot", diag)
-                    onError(issue, diag)
-                }
-            }, Handler(Looper.getMainLooper()))
-        } catch (se: SecurityException) {
-            PttDiagnostics.error("Hotspot", "SecurityException starting LocalHotspot", se)
-            onError(WifiEnvironmentIssue.MISSING_PERMISSION, se.message ?: "SecurityException")
-        } catch (ise: IllegalStateException) {
-            PttDiagnostics.error("Hotspot", "IllegalStateException starting LocalHotspot", ise)
-            onError(WifiEnvironmentIssue.HOTSPOT_START_FAILED, ise.message ?: "Hotspot request already active")
-        } catch (t: Throwable) {
-            PttDiagnostics.error("Hotspot", "Unexpected error starting LocalHotspot", t)
-            onError(WifiEnvironmentIssue.HOTSPOT_START_FAILED, t.message ?: "Unexpected hotspot error")
-        }
-    }
-
-    /**
-     * Resolves IPv4 gateway ONLY when the device is actively associated with a Wi-Fi network.
-     * Supports isolated Local-Only Hotspots (which have TRANSPORT_WIFI without NET_CAPABILITY_INTERNET).
-     */
-    private fun resolveConnectedWifiGatewayIp(): String? {
-        try {
-            val cm = connectivityManager
-            if (cm != null) {
-                @Suppress("DEPRECATION")
-                val allNets = cm.allNetworks
-                for (net in allNets) {
-                    val caps = cm.getNetworkCapabilities(net) ?: continue
-                    if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
-                    val props = cm.getLinkProperties(net) ?: continue
-                    for (route in props.routes) {
-                        val gw = route.gateway
-                        if (gw is Inet4Address && !gw.isLoopbackAddress && gw.hostAddress != "0.0.0.0") {
-                            return gw.hostAddress
-                        }
-                    }
-                    // Fallback: derive .1 gateway from assigned /24 link address on isolated SoftAP
-                    for (la in props.linkAddresses) {
-                        val addr = la.address
-                        val hostAddr = addr.hostAddress
-                        if (addr is Inet4Address && !addr.isLoopbackAddress && !hostAddr.isNullOrBlank()) {
-                            val parts = hostAddr.split('.')
-                            if (parts.size == 4 && parts[3] != "1") {
-                                return "${parts[0]}.${parts[1]}.${parts[2]}.1"
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (t: Throwable) {
-            PttDiagnostics.warn("HotspotGw", "ConnectivityManager Wi-Fi gateway lookup warning", t)
-        }
-
-        try {
-            @Suppress("DEPRECATION")
-            val dhcp = wifiManager?.dhcpInfo
-            if (dhcp != null && dhcp.gateway != 0 && dhcp.ipAddress != 0) {
-                val g = dhcp.gateway
-                val ip = "${g and 0xFF}.${(g shr 8) and 0xFF}.${(g shr 16) and 0xFF}.${(g shr 24) and 0xFF}"
-                if (ip != "0.0.0.0") return ip
-            }
-        } catch (_: Throwable) {}
-        return null
-    }
-
-    private fun findMatchingRadioNetwork(remoteIp: String, viaLocalHotspot: Boolean): Network? {
+    private fun findMatchingRadioNetwork(remoteIp: String): Network? {
         val cm = connectivityManager ?: return null
         val parts = remoteIp.split('.')
         val subnetPrefix = if (parts.size == 4) "${parts[0]}.${parts[1]}.${parts[2]}." else null
@@ -817,15 +699,15 @@ class WifiDirectManager(
                     if (matchesAddr || matchesGw) return net
                 }
             }
-            if (viaLocalHotspot && anyWifiCandidate != null) return anyWifiCandidate
+            if (anyWifiCandidate != null && isP2pGroupNetwork(anyWifiCandidate)) return anyWifiCandidate
         } catch (t: Throwable) {
             PttDiagnostics.warn("NetBind", "Lookup matching Network warning", t)
         }
         return null
     }
 
-    override fun bindSocketToRadioNetwork(socket: Socket, remoteIp: String, viaLocalHotspot: Boolean): Boolean {
-        val net = findMatchingRadioNetwork(remoteIp, viaLocalHotspot) ?: return false
+    override fun bindSocketToRadioNetwork(socket: Socket, remoteIp: String): Boolean {
+        val net = findMatchingRadioNetwork(remoteIp) ?: return false
         return try {
             net.bindSocket(socket)
             PttDiagnostics.info("NetBind", "Bound TCP socket to explicit Android Network for $remoteIp")
@@ -836,14 +718,16 @@ class WifiDirectManager(
         }
     }
 
-    override fun bindDatagramToRadioNetwork(socket: DatagramSocket, remoteIp: String, viaLocalHotspot: Boolean): Boolean {
-        val net = findMatchingRadioNetwork(remoteIp, viaLocalHotspot) ?: return false
+    /**
+     * True when the given network is the Wi-Fi Direct group (its interface is a `p2p*` one).
+     * Guarding the fallback keeps ordinary home Wi-Fi from being used for P2P traffic.
+     */
+    private fun isP2pGroupNetwork(net: Network): Boolean {
+        val cm = connectivityManager ?: return false
         return try {
-            net.bindSocket(socket)
-            PttDiagnostics.info("NetBind", "Bound UDP socket to explicit Android Network for $remoteIp")
-            true
-        } catch (t: Throwable) {
-            PttDiagnostics.warn("NetBind", "Network.bindSocket(UDP) failed", t)
+            val props = cm.getLinkProperties(net) ?: return false
+            props.interfaceName?.lowercase()?.startsWith("p2p") == true
+        } catch (_: Throwable) {
             false
         }
     }
@@ -870,6 +754,10 @@ class WifiDirectManager(
 
     /**
      * Sequenced, non-conflicting session discovery.
+     *
+     * Only advertisements that carry a session id and a certificate pin ever reach the UI, and each
+     * round re-validates them, so a stale/vanished host disappears instead of lingering as a ghost
+     * entry that would fail at join time.
      */
     override fun startSessionDiscovery(
         onStarted: () -> Unit,
@@ -925,6 +813,8 @@ class WifiDirectManager(
                     if (PttProtocol.matchesDnsSdService(fullDomain, null) || record.containsKey("sid")) {
                         cachedTxtByAddress[addr] = record
                         processDiscoveredDnsRecord(record, addr, devName)
+                    } else {
+                        PttDiagnostics.warn("DnsSd", "Ignoring TXT record from $addr: not an RMG-PTT advertisement")
                     }
                 }
             }
@@ -1047,6 +937,7 @@ class WifiDirectManager(
         onError: (WifiEnvironmentIssue, String) -> Unit
     ) {
         if (operationGen.get() != gen || !scanning.get()) return
+        dropStaleAdvertisements()
         if (completedRound < MAX_DISCOVERY_ROUNDS) {
             runDiscoveryRoundDnsPhase(gen, completedRound + 1, onError)
         } else {
@@ -1059,40 +950,55 @@ class WifiDirectManager(
         }
     }
 
+    /**
+     * Peer-discovery fallback used only to complete an ALREADY VERIFIED advertisement.
+     *
+     * A raw P2P peer is NOT an application host: it may be a printer, a TV or any other Wi-Fi Direct
+     * app. The fallback therefore never publishes a device on its own — it only attaches the live P2P
+     * MAC address (needed for `WifiP2pManager.connect`) to a session whose DNS-SD TXT record already
+     * carried a valid `sid` + `fp` pin, matched by the peer's advertised device name.
+     */
     private fun inspectAvailablePeersForFallback() {
         driver.requestPeers { peers ->
             if (!scanning.get()) return@requestPeers
-            var changed = false
-            val now = System.currentTimeMillis()
-            val candidates = peers.filter {
+            val livePeers = peers.filter {
                 it.deviceAddress.isNotBlank() &&
-                    (it.isGroupOwner || it.status == WifiP2pDevice.AVAILABLE || it.status == WifiP2pDevice.INVITED || it.status == WifiP2pDevice.CONNECTED)
+                    it.status in setOf(WifiP2pDevice.AVAILABLE, WifiP2pDevice.INVITED, WifiP2pDevice.CONNECTED)
             }
-            for (peer in candidates) {
-                val existing = discoveredByAddress[peer.deviceAddress]
-                if (existing != null && !existing.discoveredViaFallback) {
-                    continue
-                }
-                if (!peer.isGroupOwner && candidates.any { it.isGroupOwner }) continue
+            if (livePeers.isEmpty()) return@requestPeers
 
-                val cleanName = peer.deviceName.trim().ifBlank { peer.deviceAddress }
-                discoveredByAddress[peer.deviceAddress] = DiscoveredPttSession(
-                    deviceAddress = peer.deviceAddress,
-                    sessionId = "peer_${peer.deviceAddress.replace(":", "").lowercase()}",
-                    hostName = cleanName,
-                    deviceName = cleanName,
-                    tcpPort = PttProtocol.DEFAULT_TCP_PORT,
-                    protocolVersion = PttProtocol.PROTOCOL_VERSION,
-                    lastSeenMs = now,
-                    discoveredViaFallback = true
+            var changed = false
+            val unresolved = discoveredByAddress.values.filter { it.deviceAddress.isBlank() }
+            for (session in unresolved) {
+                val match = livePeers.firstOrNull { peer ->
+                    peer.deviceName.isNotBlank() &&
+                        (peer.deviceName.equals(session.deviceName, ignoreCase = true) ||
+                            peer.deviceName.equals(session.hostName, ignoreCase = true))
+                } ?: continue
+                discoveredByAddress.remove(session.deviceAddress)
+                discoveredByAddress[match.deviceAddress] = session.copy(
+                    deviceAddress = match.deviceAddress,
+                    deviceName = match.deviceName.ifBlank { session.deviceName },
+                    lastSeenMs = System.currentTimeMillis()
+                )
+                PttDiagnostics.info(
+                    "Discovery",
+                    "Verified host '${session.hostName}' resolved to live P2P MAC ${match.deviceAddress}"
                 )
                 changed = true
             }
-            if (changed) {
-                PttDiagnostics.info("Discovery", "Fallback peer list updated (${discoveredByAddress.size} candidate(s))")
-                publishDiscoveredList()
-            }
+            if (changed) publishDiscoveredList()
         }
+    }
+
+    /** Removes verified hosts whose DNS-SD record has not been refreshed for [ADVERT_STALE_MS]. */
+    private fun dropStaleAdvertisements() {
+        val cutoff = System.currentTimeMillis() - ADVERT_STALE_MS
+        val stale = discoveredByAddress.filterValues { it.lastSeenMs < cutoff }.keys
+        if (stale.isEmpty()) return
+        stale.forEach { discoveredByAddress.remove(it) }
+        PttDiagnostics.info("Discovery", "Dropped ${stale.size} stale advertisement(s) that were not refreshed")
+        publishDiscoveredList()
     }
 
     override fun stopSessionDiscovery() {
@@ -1110,15 +1016,15 @@ class WifiDirectManager(
         onInitiated: () -> Unit,
         onFailed: (WifiEnvironmentIssue, String) -> Unit
     ) {
-        val cached = discoveredByAddress[deviceAddress] ?: DiscoveredPttSession(
-            deviceAddress = deviceAddress,
-            sessionId = "",
-            hostName = "",
-            deviceName = "",
-            tcpPort = PttProtocol.DEFAULT_TCP_PORT,
-            protocolVersion = PttProtocol.PROTOCOL_VERSION,
-            lastSeenMs = System.currentTimeMillis()
-        )
+        val cached = discoveredByAddress.values.firstOrNull { it.deviceAddress == deviceAddress }
+        if (cached == null || !cached.isVerifiedAppHost) {
+            // A raw MAC can never be trusted as an application host: only verified advertisements are joinable.
+            onFailed(
+                WifiEnvironmentIssue.CONNECT_FAILED,
+                "Only verified RMG advertisements can be joined; search again and pick the listed host"
+            )
+            return
+        }
         connectToSession(cached, onInitiated, onFailed)
     }
 
@@ -1151,6 +1057,14 @@ class WifiDirectManager(
         }
         if (!driver.ensureInitialized()) {
             onFailed(WifiEnvironmentIssue.P2P_UNSUPPORTED, "WifiP2pManager channel initialization returned null")
+            return
+        }
+
+        if (!session.isVerifiedAppHost) {
+            onFailed(
+                WifiEnvironmentIssue.CONNECT_FAILED,
+                "[Verify] Session '${session.hostName}' has no verified certificate pin; refusing an unauthenticated join"
+            )
             return
         }
 
@@ -1434,7 +1348,16 @@ class WifiDirectManager(
             return
         }
         val sid = record["sid"].orEmpty().trim()
-        if (sid.isEmpty()) return
+        if (sid.isEmpty()) {
+            PttDiagnostics.warn("DnsSd", "Ignoring advertisement from $deviceAddress without a session id")
+            return
+        }
+        val pin = record["fp"].orEmpty().trim().lowercase()
+        if (pin.length != 64) {
+            // Older/incompatible builds (or a foreign DNS-SD service) cannot be verified -> never listed.
+            PttDiagnostics.warn("DnsSd", "Ignoring advertisement from $deviceAddress: missing 64-hex certificate pin")
+            return
+        }
         val effectiveDevName = rawDeviceName.ifBlank { cachedDeviceNameByAddress[deviceAddress].orEmpty() }
         val hostName = record["host"].orEmpty().trim().ifBlank {
             effectiveDevName.ifBlank { deviceAddress }
@@ -1444,7 +1367,8 @@ class WifiDirectManager(
         val groupSsid = record["gn"].orEmpty().trim()
         val groupPass = record["gp"].orEmpty().trim()
 
-        discoveredByAddress[deviceAddress] = DiscoveredPttSession(
+        val key = deviceAddress.ifBlank { "sid:$sid" }
+        discoveredByAddress[key] = DiscoveredPttSession(
             deviceAddress = deviceAddress,
             sessionId = sid,
             hostName = hostName,
@@ -1455,17 +1379,18 @@ class WifiDirectManager(
             discoveredViaFallback = false,
             groupOwnerIpHint = goIpHint,
             groupNetworkName = groupSsid,
-            groupPassphrase = groupPass
+            groupPassphrase = groupPass,
+            hostCertificatePin = pin
         )
         PttDiagnostics.info(
             "DnsSd",
-            "Discovered verified DNS-SD host '$hostName' ($deviceAddress:$port, directSsid=${groupSsid.isNotBlank()}, goIp=$goIpHint)"
+            "Verified RMG host '$hostName' (sid=${sid.take(8)} key=$key port=$port directSsid=${groupSsid.isNotBlank()} pinOk=true)"
         )
         publishDiscoveredList()
     }
 
     private fun publishDiscoveredList() {
-        val sorted = discoveredByAddress.values.sortedWith(
+        val sorted = discoveredByAddress.values.filter { it.isVerifiedAppHost }.sortedWith(
             compareBy<DiscoveredPttSession> { it.discoveredViaFallback }
                 .thenByDescending { it.lastSeenMs }
         )
@@ -1510,7 +1435,7 @@ class WifiDirectManager(
 
     /**
      * Unified, idempotent cleanup of all Wi-Fi Direct discovery requests, local services,
-     * pending connection attempts, P2P groups, broadcast receivers, and Local-Only Hotspot reservations.
+     * pending connection attempts, P2P groups, and broadcast receivers.
      */
     @Synchronized
     override fun teardownRadio() {
@@ -1533,13 +1458,7 @@ class WifiDirectManager(
         }
         try { driver.removeGroupNow() } catch (_: Throwable) {}
 
-        closeHotspotReservation()
         unregisterReceiverQuietly()
-    }
-
-    private fun closeHotspotReservation() {
-        try { hotspotReservation?.close() } catch (_: Throwable) {}
-        hotspotReservation = null
     }
 
     private fun ensureReceiverRegistered() {

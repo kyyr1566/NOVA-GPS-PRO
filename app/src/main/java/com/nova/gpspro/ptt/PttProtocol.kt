@@ -70,13 +70,58 @@ object PttSecurity {
         return h
     }
 
-    /** Derives a 256-bit session key from the normalized channel code and per-session random salt. */
-    fun deriveSessionKey(channelCode: String, sessionSaltHex: String): ByteArray {
-        val normalized = PttSettings.normalizeChannelCode(channelCode)
-        val salt = ("RMG-PTT-V1|" + sessionSaltHex.lowercase()).toByteArray(StandardCharsets.UTF_8)
-        val spec = PBEKeySpec(normalized.toCharArray(), salt, 4096, 256)
+    // ==================== Certificate pinning (no channel code required) ====================
+    //
+    // The session secret can no longer come from a typed-in channel code, so it is derived from the
+    // host's ephemeral self-signed certificate, whose SHA-256 fingerprint is advertised in the
+    // DNS-SD TXT record (`fp`) and verified by the guest before the join proof is sent. The guest
+    // therefore proves knowledge of the *specific verified host session*, and every later frame is
+    // MACed with a key only that verified pair knows. Replay is still blocked by the per-connection
+    // random `serverNonce` + `clientNonce`, and the host still requires an explicit human approval.
+
+    private const val CERT_SALT_NAMESPACE = "RMG-PTT-CERT-V1|"
+
+    /** Certificate SubjectPublicKeyInfo encoding — stable across KeyPairGenerators. */
+    fun certificatePublicKeyBytes(publicKey: java.security.PublicKey): ByteArray = publicKey.encoded
+
+    /** (issuerHashHex, publicKeyHashHex) — both lowercase hex SHA-256. */
+    fun certificateFingerprint(publicKey: java.security.PublicKey): Pair<String, String> {
+        val encoded = certificatePublicKeyBytes(publicKey)
+        val spki = toHex(MessageDigest.getInstance("SHA-256").digest(encoded))
+        val issuer = toHex(MessageDigest.getInstance("SHA-256").digest(("RMG-PTT-HOST|" + spki).toByteArray(StandardCharsets.UTF_8)))
+        return issuer to spki
+    }
+
+    fun computeCertificatePinIssuer(publicKey: java.security.PublicKey): String =
+        certificateFingerprint(publicKey).first
+
+    /** Same value as [computeCertificatePinIssuer] but straight from the encoded SPKI bytes. */
+    fun computeCertificatePinIssuerFromEncoded(encodedSpki: ByteArray): String {
+        val spki = toHex(MessageDigest.getInstance("SHA-256").digest(encodedSpki))
+        return toHex(MessageDigest.getInstance("SHA-256").digest(("RMG-PTT-HOST|" + spki).toByteArray(StandardCharsets.UTF_8)))
+    }
+
+    /** Derives the 256-bit session key from the verified host certificate (PBKDF2, 4096 rounds). */
+    fun deriveSessionKeyFromCertificate(
+        hostPublicKeyBytes: ByteArray,
+        sessionId: String,
+        sessionSaltHex: String
+    ): ByteArray {
+        val material = CERT_SALT_NAMESPACE + sessionId + "|" + sessionSaltHex.lowercase()
+        val salt = MessageDigest.getInstance("SHA-256")
+            .digest(material.toByteArray(StandardCharsets.UTF_8))
+        val spec = PBEKeySpec(toHex(MessageDigest.getInstance("SHA-256").digest(hostPublicKeyBytes)).toCharArray(), salt, 4096, 256)
         return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
     }
+
+    /**
+     * Binds the human approval itself into the key material: the host proves with
+     * `deriveSessionKey(..., approvalNonce)` only after Accept, and the guest independently derives
+     * the same key from the `JoinPendingApproval` nonce. Rejecting a request therefore releases no
+     * usable key, and a pending (unapproved) request cannot be turned into a session.
+     */
+    fun deriveApprovalKey(baseSessionKey: ByteArray, approvalNonceHex: String): ByteArray =
+        hmacSha256(baseSessionKey, ("APPROVAL|" + approvalNonceHex.lowercase()).toByteArray(StandardCharsets.UTF_8))
 
     fun deriveMediaKey(sessionKey: ByteArray, sessionId: String): ByteArray =
         hmacSha256(sessionKey, ("MEDIA|$sessionId").toByteArray(StandardCharsets.UTF_8))
@@ -231,7 +276,12 @@ object PttDiagnostics {
 }
 
 object PttProtocol {
-    const val PROTOCOL_VERSION: Int = 1
+    /**
+     * Bumped to 2 with the removal of channel codes: peers now bootstrap the session secret from the
+     * host certificate (HelloChallenge carries the host SPKI) instead of a shared user-typed code, so
+     * a v1 peer can never be mistaken for a compatible one.
+     */
+    const val PROTOCOL_VERSION: Int = 2
     const val DEFAULT_TCP_PORT: Int = 49320
     const val DEFAULT_UDP_PORT: Int = 49321
     /** RFC 6763 / Android WifiP2pDnsSdServiceInfo compliant instance & service type -> rmgptt._rmgptt._tcp.local. */
@@ -274,6 +324,10 @@ object PttProtocol {
             val protocolVersion: Int,
             val sessionId: String,
             val sessionSaltHex: String,
+            /** Host identity public key (hex SPKI). Its SHA-256 must equal the advertised pin. */
+            val hostPublicKeyHex: String,
+            /** SHA-256 of the host SPKI; guest must match the DNS-SD `fp` pin before proving. */
+            val hostPublicKeyHashHex: String,
             val serverNonce: String,
             val hostId: String,
             val hostName: String,
@@ -283,6 +337,8 @@ object PttProtocol {
         data class JoinRequest(
             val protocolVersion: Int,
             val sessionId: String,
+            /** Echo of the pinned host key hash so the host rejects stale/wrong-group dials early. */
+            val hostPublicKeyHashHex: String,
             val clientNonce: String,
             val deviceId: String,
             val displayName: String,
@@ -291,7 +347,8 @@ object PttProtocol {
             val clientProofHex: String
         ) : ControlFrame()
 
-        data class JoinPendingApproval(val sessionId: String) : ControlFrame()
+        /** Sent only after the host ACCEPTED: carries the nonce that finalises the session key. */
+        data class JoinPendingApproval(val sessionId: String, val approvalNonceHex: String) : ControlFrame()
 
         data class JoinAccepted(
             val sessionId: String,
@@ -345,6 +402,8 @@ object PttProtocol {
                 d.writeInt(frame.protocolVersion)
                 d.writeUTF(frame.sessionId.take(64))
                 d.writeUTF(frame.sessionSaltHex.take(64))
+                d.writeUTF(frame.hostPublicKeyHex.take(1024))
+                d.writeUTF(frame.hostPublicKeyHashHex.take(64))
                 d.writeUTF(frame.serverNonce.take(64))
                 d.writeUTF(frame.hostId.take(64))
                 d.writeUTF(frame.hostName.take(40))
@@ -354,6 +413,7 @@ object PttProtocol {
             is ControlFrame.JoinRequest -> {
                 d.writeInt(frame.protocolVersion)
                 d.writeUTF(frame.sessionId.take(64))
+                d.writeUTF(frame.hostPublicKeyHashHex.take(64))
                 d.writeUTF(frame.clientNonce.take(64))
                 d.writeUTF(frame.deviceId.take(64))
                 d.writeUTF(frame.displayName.take(40))
@@ -364,6 +424,7 @@ object PttProtocol {
             }
             is ControlFrame.JoinPendingApproval -> {
                 d.writeUTF(frame.sessionId.take(64))
+                d.writeUTF(frame.approvalNonceHex.take(64))
                 T_JOIN_PENDING
             }
             is ControlFrame.JoinAccepted -> {
@@ -494,12 +555,20 @@ object PttProtocol {
         val p = DataInputStream(ByteArrayInputStream(payload))
         return when (type) {
             T_HELLO_CHALLENGE -> ControlFrame.HelloChallenge(
-                p.readInt(), p.readUTF(), p.readUTF(), p.readUTF(), p.readUTF(), p.readUTF(), p.readInt()
+                protocolVersion = p.readInt(),
+                sessionId = p.readUTF(),
+                sessionSaltHex = p.readUTF(),
+                hostPublicKeyHex = p.readUTF(),
+                hostPublicKeyHashHex = p.readUTF(),
+                serverNonce = p.readUTF(),
+                hostId = p.readUTF(),
+                hostName = p.readUTF(),
+                supportedCodecMask = p.readInt()
             )
             T_JOIN_REQUEST -> ControlFrame.JoinRequest(
-                p.readInt(), p.readUTF(), p.readUTF(), p.readUTF(), p.readUTF(), p.readInt(), p.readInt(), p.readUTF()
+                p.readInt(), p.readUTF(), p.readUTF(), p.readUTF(), p.readUTF(), p.readUTF(), p.readInt(), p.readInt(), p.readUTF()
             )
-            T_JOIN_PENDING -> ControlFrame.JoinPendingApproval(p.readUTF())
+            T_JOIN_PENDING -> ControlFrame.JoinPendingApproval(p.readUTF(), p.readUTF())
             T_JOIN_ACCEPTED -> ControlFrame.JoinAccepted(
                 p.readUTF(), p.readUTF(), p.readUTF(), p.readInt(), p.readInt(), p.readUTF(), readRoster(p)
             )

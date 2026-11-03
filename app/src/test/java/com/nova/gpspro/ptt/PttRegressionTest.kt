@@ -20,6 +20,12 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class PttRegressionTest {
 
+    companion object {
+        /** Stand-in for the Keystore SPKI: any stable bytes produce a stable certificate pin. */
+        val TEST_HOST_PUBLIC_KEY: ByteArray = ByteArray(64) { (it + 7).toByte() }
+        val TEST_HOST_PIN: String = PttSecurity.computeCertificatePinIssuerFromEncoded(TEST_HOST_PUBLIC_KEY)
+    }
+
     // =========================================================================
     // Test Doubles: Manual Task Scheduler, Fake P2P Driver, Fake Radio Transport,
     // Fake Service Bridge, Fake Audio Controller, Fake Permission Gate
@@ -291,8 +297,7 @@ class PttRegressionTest {
 
     private class FakeRadioTransport(
         var wifiOn: Boolean = true,
-        var envIssue: WifiEnvironmentIssue = WifiEnvironmentIssue.NONE,
-        var gatewayCheck: LocalHotspotGatewayCheck = LocalHotspotGatewayCheck.NotConnectedToHotspot
+        var envIssue: WifiEnvironmentIssue = WifiEnvironmentIssue.NONE
     ) : PttRadioTransport {
         override var listener: PttRadioTransport.Listener? = null
         var autoCompleteHosting: Boolean = true
@@ -300,6 +305,7 @@ class PttRegressionTest {
         var advertisedTcpPort: Int = 0
         var advertisedSessionId: String = ""
         var advertisedHostName: String = ""
+        var advertisedPin: String = ""
         var scanningNow = false
         var targetConnectHostIp: String = "127.0.0.1"
         var autoCompleteConnect: Boolean = true
@@ -313,19 +319,18 @@ class PttRegressionTest {
         override fun diagnoseEnvironment(): WifiEnvironmentIssue =
             if (!wifiOn) WifiEnvironmentIssue.WIFI_DISABLED else envIssue
 
-        override fun checkLocalHotspotGateway(): LocalHotspotGatewayCheck =
-            if (!wifiOn) LocalHotspotGatewayCheck.WifiTurnedOff else gatewayCheck
-
         override fun startHostingGroup(
             sessionId: String,
             hostDisplayName: String,
             tcpPort: Int,
+            certificatePin: String,
             onReady: (String) -> Unit,
             onError: (WifiEnvironmentIssue, String) -> Unit
         ) {
             advertisedSessionId = sessionId
             advertisedHostName = hostDisplayName
             advertisedTcpPort = tcpPort
+            advertisedPin = certificatePin
             val fail = hostingFailIssue
             if (fail != null) {
                 onError(fail, "Simulated hosting failure: $fail")
@@ -347,18 +352,6 @@ class PttRegressionTest {
         fun failPendingHost(issue: WifiEnvironmentIssue) {
             pendingHostError?.invoke(issue, "Async host failure")
             pendingHostError = null
-        }
-
-        override fun startLocalOnlyHotspotFallback(
-            onReady: (String, String) -> Unit,
-            onError: (WifiEnvironmentIssue, String) -> Unit
-        ) {
-            if (!wifiOn) {
-                onError(WifiEnvironmentIssue.WIFI_DISABLED, "Wi-Fi off")
-            } else {
-                listener?.onLocalHotspotStarted("AndroidShare_RMG", "12345678")
-                onReady("AndroidShare_RMG", "12345678")
-            }
         }
 
         override fun startSessionDiscovery(
@@ -424,6 +417,7 @@ class PttRegressionTest {
         tcpPort: Int = 0
     ): PttRepository = PttRepository(
         appCtx = null,
+        hostPublicKeyProvider = { TEST_HOST_PUBLIC_KEY },
         settings = InMemoryPttSettings(deviceId = devId, displayName = name),
         serviceBridge = service,
         wifiDirect = transport,
@@ -447,7 +441,7 @@ class PttRegressionTest {
         val audio = FakeAudioController()
         val repo = buildTestRepo("HostUser", "DEV_H1", transport, service, audio)
 
-        val ok = repo.createHostSession("RMG742")
+        val ok = repo.createHostSession()
 
         assertFalse("createHostSession must abort immediately when Wi-Fi is off", ok)
         assertEquals(PttPhase.DISCONNECTED, repo.state.value.phase)
@@ -471,7 +465,7 @@ class PttRegressionTest {
         val repo = buildTestRepo("Captain", "DEV_H2", transport, service, audio)
 
         // Start hosting while group formation is still in progress
-        assertTrue(repo.createHostSession("NOVA55"))
+        assertTrue(repo.createHostSession())
         assertEquals("Must stay in HOSTING until P2P group forms", PttPhase.HOSTING, repo.state.value.phase)
         assertEquals("PttService must NOT start during HOSTING", 0, service.startCalls.get())
         assertEquals("AudioEngine must NOT start during HOSTING", 0, audio.receiveStartCalls.get())
@@ -491,7 +485,7 @@ class PttRegressionTest {
         val service2 = FakeServiceBridge()
         val transport2 = FakeRadioTransport(wifiOn = true).apply { autoCompleteHosting = false }
         val repo2 = buildTestRepo("Captain", "DEV_H2B", transport2, service2)
-        assertTrue(repo2.createHostSession("NOVA55"))
+        assertTrue(repo2.createHostSession())
         assertEquals(PttPhase.HOSTING, repo2.state.value.phase)
         transport2.failPendingHost(WifiEnvironmentIssue.HOSTING_GROUP_FAILED)
         assertEquals(PttPhase.DISCONNECTED, repo2.state.value.phase)
@@ -520,6 +514,7 @@ class PttRegressionTest {
             sessionId = "SESS1234",
             hostDisplayName = "PhoneOne",
             tcpPort = 49320,
+            certificatePin = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             onReady = { readyIp = it },
             onError = { issue, diag -> fail("Unexpected error: $issue / $diag") }
         )
@@ -546,7 +541,6 @@ class PttRegressionTest {
             override fun onDiscoveryFinishedEmpty() { finishedEmpty = true }
             override fun onP2pLinkEstablished(isGroupOwner: Boolean, groupOwnerIp: String) {}
             override fun onP2pLinkDisconnected() {}
-            override fun onLocalHotspotStarted(ssid: String, passphrase: String) {}
             override fun onTransportFailure(issue: WifiEnvironmentIssue, diagnostic: String) {}
         }
 
@@ -585,7 +579,6 @@ class PttRegressionTest {
             override fun onDiscoveryFinishedEmpty() {}
             override fun onP2pLinkEstablished(isGroupOwner: Boolean, groupOwnerIp: String) {}
             override fun onP2pLinkDisconnected() {}
-            override fun onLocalHotspotStarted(ssid: String, passphrase: String) {}
             override fun onTransportFailure(issue: WifiEnvironmentIssue, diagnostic: String) {}
         }
         assertTrue(fallbackWdm.startSessionDiscovery(onError = { i, d -> fail("$i: $d") }))
@@ -607,7 +600,6 @@ class PttRegressionTest {
             override fun onDiscoveryFinishedEmpty() { emptyTriggered = true }
             override fun onP2pLinkEstablished(isGroupOwner: Boolean, groupOwnerIp: String) {}
             override fun onP2pLinkDisconnected() {}
-            override fun onLocalHotspotStarted(ssid: String, passphrase: String) {}
             override fun onTransportFailure(issue: WifiEnvironmentIssue, diagnostic: String) {}
         }
         assertTrue(emptyWdm.startSessionDiscovery(onError = { _, _ -> }))
@@ -617,33 +609,76 @@ class PttRegressionTest {
     }
 
     // =========================================================================
-    // REGRESSION BUG 3: Wi-Fi ON + Local Hotspot Join without Gateway ->
-    //                   MUST report HOTSPOT_NOT_CONNECTED, NEVER WIFI_DISABLED!
+    // PHASE 2: the Local-Only Hotspot path no longer exists. A join attempt while Wi-Fi is
+    // switched OFF must still report WIFI_DISABLED (never a hotspot/offline fallback error),
+    // and there must be no way left to join without a verified certificate pin.
     // =========================================================================
 
     @Test
-    fun bug3_localHotspotJoinWithWifiEnabledNeverShowsFalseWifiDisabledError() {
-        val transport = FakeRadioTransport(
-            wifiOn = true,
-            gatewayCheck = LocalHotspotGatewayCheck.NotConnectedToHotspot
-        )
+    fun phase2_joinWithoutWifiIsRejectedWithWifiDisabledAndNoFallbackExists() {
+        val transport = FakeRadioTransport(wifiOn = false)
         val repo = buildTestRepo("GuestPhone2", "DEV_G1", transport)
 
-        val joined = repo.requestJoinLocalHotspotGateway("RMG742")
-        assertFalse(joined)
-        assertEquals(PttPhase.DISCONNECTED, repo.state.value.phase)
-        assertNotEquals(
-            "MUST NOT falsely claim Wi-Fi is disabled when Wi-Fi is ON!",
-            PttErrorCode.WIFI_DISABLED,
-            repo.state.value.errorCode
+        val discovered = DiscoveredPttSession(
+            deviceAddress = "aa:bb:cc:dd:ee:f1",
+            sessionId = "sess-abcdef12",
+            hostName = "Host",
+            deviceName = "HostPhone",
+            tcpPort = 49320,
+            protocolVersion = PttProtocol.PROTOCOL_VERSION,
+            lastSeenMs = System.currentTimeMillis(),
+            hostCertificatePin = TEST_HOST_PIN
         )
-        assertEquals(PttErrorCode.HOTSPOT_NOT_CONNECTED, repo.state.value.errorCode)
-
-        // Contrast: when Wi-Fi is genuinely turned OFF, it MUST report WIFI_DISABLED
-        transport.wifiOn = false
-        assertFalse(repo.requestJoinLocalHotspotGateway("RMG742"))
+        assertFalse(repo.requestJoinDiscoveredSession(discovered))
+        assertEquals(PttPhase.DISCONNECTED, repo.state.value.phase)
         assertEquals(PttErrorCode.WIFI_DISABLED, repo.state.value.errorCode)
         repo.teardownSession(false, false)
+    }
+
+    @Test
+    fun phase2_joinOfUnverifiedHostIsRefusedBeforeAnySocketIsOpened() {
+        val transport = FakeRadioTransport(wifiOn = true)
+        val repo = buildTestRepo("GuestPhone3", "DEV_G2", transport)
+
+        // No certificate pin -> a bare P2P neighbour is never joinable (no unauthenticated join).
+        val unverified = DiscoveredPttSession(
+            deviceAddress = "aa:bb:cc:dd:ee:f2",
+            sessionId = "",
+            hostName = "RandomPeer",
+            deviceName = "RandomPhone",
+            tcpPort = 49320,
+            protocolVersion = PttProtocol.PROTOCOL_VERSION,
+            lastSeenMs = System.currentTimeMillis()
+        )
+        assertFalse(unverified.isVerifiedAppHost)
+        assertFalse(repo.requestJoinDiscoveredSession(unverified))
+        assertEquals(PttErrorCode.PROTOCOL_INCOMPATIBLE, repo.state.value.errorCode)
+        assertEquals(PttPhase.DISCONNECTED, repo.state.value.phase)
+        repo.teardownSession(false, false)
+    }
+
+    @Test
+    fun phase2_hostSessionRequiresAHostIdentityAndAdvertisesItsPin() {
+        val transport = FakeRadioTransport(wifiOn = true)
+        val repoWithoutIdentity = PttRepository(
+            appCtx = null,
+            settings = InMemoryPttSettings(displayName = "NoIdentity"),
+            serviceBridge = FakeServiceBridge(),
+            wifiDirect = transport,
+            permissionGate = FakePermissionGate(coreGranted = true),
+            audioEngine = FakeAudioController(),
+            hostPublicKeyProvider = { null },
+            preferredHostTcpPort = 0,
+            preferredHostUdpPort = 0
+        )
+        assertFalse("A host without a certificate must not advertise", repoWithoutIdentity.createHostSession())
+        assertEquals(PttErrorCode.HOSTING_FAILED, repoWithoutIdentity.state.value.errorCode)
+
+        val repo = buildTestRepo("HostWithIdentity", "DEV_H2", FakeRadioTransport(wifiOn = true), tcpPort = 0)
+        assertTrue(repo.createHostSession())
+        assertEquals(TEST_HOST_PIN, (repo.wifiDirect as FakeRadioTransport).advertisedPin)
+        assertEquals(PttPhase.IN_SESSION, repo.state.value.phase)
+        repo.endSessionByUser()
     }
 
     // =========================================================================
@@ -658,7 +693,7 @@ class PttRegressionTest {
         val hostAudio = FakeAudioController()
         val hostRepo = buildTestRepo("Ahmad", "HOST_DEV", hostTransport, hostService, hostAudio, tcpPort = 0)
 
-        assertTrue(hostRepo.createHostSession("SAFE88"))
+        assertTrue(hostRepo.createHostSession())
         assertEquals(PttPhase.IN_SESSION, hostRepo.state.value.phase)
         val hostPort = hostTransport.advertisedTcpPort
         assertTrue("Host must bind real TCP port > 0", hostPort > 0)
@@ -670,7 +705,8 @@ class PttRegressionTest {
             deviceName = "PixelHost",
             tcpPort = hostPort,
             protocolVersion = PttProtocol.PROTOCOL_VERSION,
-            lastSeenMs = System.currentTimeMillis()
+            lastSeenMs = System.currentTimeMillis(),
+            hostCertificatePin = hostTransport.advertisedPin
         )
 
         val guestTransport = FakeRadioTransport(wifiOn = true).apply { targetConnectHostIp = "127.0.0.1" }
@@ -685,16 +721,18 @@ class PttRegressionTest {
         guestTransport.listener?.onSessionsDiscovered(listOf(discovered))
         assertEquals(PttDiscoveryState.FOUND, guestRepo.state.value.discoveryState)
 
-        // 2) Wrong channel code -> cryptographically rejected with AUTH_FAILED!
-        assertTrue(guestRepo.requestJoinDiscoveredSession(discovered, "WRONG1"))
+        // 2) A wrong pin (spoofed/other host) -> cryptographically rejected with AUTH_FAILED and the
+        //    host never even receives a join request (no unauthenticated guest can reach approval).
+        val spoofed = discovered.copy(hostCertificatePin = "b".repeat(64))
+        assertTrue(guestRepo.requestJoinDiscoveredSession(spoofed))
         assertTrue(
-            "Guest must fail with AUTH_FAILED on wrong channel code",
+            "Guest must fail with AUTH_FAILED on a mismatched host certificate",
             waitUntil { guestRepo.state.value.phase == PttPhase.DISCONNECTED && guestRepo.state.value.errorCode == PttErrorCode.AUTH_FAILED }
         )
-        assertTrue("Host must have zero pending approvals for wrong code", hostRepo.state.value.pendingApprovals.isEmpty())
+        assertTrue("Host must have zero pending approvals for a failed identity check", hostRepo.state.value.pendingApprovals.isEmpty())
 
-        // 3) Correct channel code, then Host clicks REJECT -> Guest gets REJECTED_BY_HOST
-        assertTrue(guestRepo.requestJoinDiscoveredSession(discovered, "SAFE88"))
+        // 3) Verified pin, then Host clicks REJECT -> Guest gets REJECTED_BY_HOST
+        assertTrue(guestRepo.requestJoinDiscoveredSession(discovered))
         assertTrue(
             "Host must receive pending join approval card",
             waitUntil { hostRepo.state.value.pendingApprovals.size == 1 }
@@ -707,8 +745,8 @@ class PttRegressionTest {
             waitUntil { guestRepo.state.value.phase == PttPhase.DISCONNECTED && guestRepo.state.value.errorCode == PttErrorCode.REJECTED_BY_HOST }
         )
 
-        // 4) Correct channel code, Host clicks ACCEPT -> both enter IN_SESSION with connectedCount = 2!
-        assertTrue(guestRepo.requestJoinDiscoveredSession(discovered, "SAFE88"))
+        // 4) Verified pin, Host clicks ACCEPT -> both enter IN_SESSION with connectedCount = 2!
+        assertTrue(guestRepo.requestJoinDiscoveredSession(discovered))
         assertTrue(waitUntil { hostRepo.state.value.pendingApprovals.size == 1 })
         hostRepo.approveJoinRequest(hostRepo.state.value.pendingApprovals.first().requestId)
 
@@ -778,10 +816,11 @@ class PttRegressionTest {
             tcpPort = roguePort,
             protocolVersion = PttProtocol.PROTOCOL_VERSION,
             lastSeenMs = System.currentTimeMillis(),
-            discoveredViaFallback = true
+            discoveredViaFallback = true,
+            hostCertificatePin = TEST_HOST_PIN
         )
 
-        assertTrue(repo.requestJoinDiscoveredSession(fallbackCandidate, "RMG742"))
+        assertTrue(repo.requestJoinDiscoveredSession(fallbackCandidate))
         assertTrue(
             "Non-PTT endpoint must be rejected with PROTOCOL_INCOMPATIBLE",
             waitUntil {
@@ -816,8 +855,17 @@ class PttRegressionTest {
         // Scenario 8b: P2P link drops before radio link finishes -> reports distinct P2P_LINK_FAILED (not generic timeout!)
         transport.wifiOn = true
         transport.autoCompleteConnect = false
-        val dummyTarget = DiscoveredPttSession("02:11:22:33:44:55", "s1", "H", "H", 49320, 1, 100L)
-        assertTrue(repo.requestJoinDiscoveredSession(dummyTarget, "RMG123"))
+        val dummyTarget = DiscoveredPttSession(
+            deviceAddress = "02:11:22:33:44:55",
+            sessionId = "s1",
+            hostName = "H",
+            deviceName = "H",
+            tcpPort = 49320,
+            protocolVersion = PttProtocol.PROTOCOL_VERSION,
+            lastSeenMs = 100L,
+            hostCertificatePin = TEST_HOST_PIN
+        )
+        assertTrue(repo.requestJoinDiscoveredSession(dummyTarget))
         assertEquals(PttPhase.CONNECTING, repo.state.value.phase)
         transport.listener?.onP2pLinkDisconnected()
         assertEquals(PttPhase.DISCONNECTED, repo.state.value.phase)
@@ -825,7 +873,7 @@ class PttRegressionTest {
 
         // Scenario 9: Repeatedly create & end host session 5 times in a row without deadlock or leak
         repeat(5) { iter ->
-            assertTrue("Iteration $iter failed to create session", repo.createHostSession("CH000$iter"))
+            assertTrue("Iteration $iter failed to create session", repo.createHostSession())
             assertEquals(PttPhase.IN_SESSION, repo.state.value.phase)
             assertTrue(service.currentlyRunning.get())
 
@@ -876,7 +924,7 @@ class PttRegressionTest {
         val hostDriver = FakeP2pDriver()
         val hostWdm = WifiDirectManager(appCtx = null, customDriver = hostDriver, scheduler = hostSched)
         var readyGoIp: String? = null
-        hostWdm.startHostingGroup("SESS99", "CaptainHost", 49320, onReady = { readyGoIp = it }, onError = { i, d -> fail("$i:$d") })
+        hostWdm.startHostingGroup("SESS99", "CaptainHost", 49320, certificatePin = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", onReady = { readyGoIp = it }, onError = { i, d -> fail("$i:$d") })
         hostDriver.currentLinkState = P2pDriver.GroupLinkState(true, true, "192.168.49.1", "DIRECT-RM-Nova")
         hostSched.advanceBy(400L)
         assertEquals("192.168.49.1", readyGoIp)
@@ -895,12 +943,12 @@ class PttRegressionTest {
             override fun onDiscoveryFinishedEmpty() {}
             override fun onP2pLinkEstablished(isGroupOwner: Boolean, groupOwnerIp: String) { linkedGoIp = groupOwnerIp }
             override fun onP2pLinkDisconnected() {}
-            override fun onLocalHotspotStarted(ssid: String, passphrase: String) {}
             override fun onTransportFailure(issue: WifiEnvironmentIssue, diagnostic: String) {}
         }
         val enrichedSession = DiscoveredPttSession(
             deviceAddress = "aa:bb:cc:11:22:33",
             sessionId = "SESS99",
+            hostCertificatePin = TEST_HOST_PIN,
             hostName = "CaptainHost",
             deviceName = "Pixel",
             tcpPort = 49320,
@@ -934,38 +982,46 @@ class PttRegressionTest {
         assertTrue(c2Driver.callLog.contains("connect(aa:bb:cc:11:22:33)"))
         assertEquals(WifiEnvironmentIssue.P2P_LINK_FAILED, failedIssue)
 
-        // 4) Full End-to-End Local-Only Hotspot Host + Guest Join over real localhost sockets
-        val hsHostTransport = FakeRadioTransport(wifiOn = true)
-        val hsHostRepo = buildTestRepo("HotspotHost", "HS_H1", hsHostTransport, tcpPort = 0)
-        assertTrue(hsHostRepo.createHostSession("HOT999", useLocalHotspotFallback = true))
-        assertEquals(PttPhase.IN_SESSION, hsHostRepo.state.value.phase)
-        assertNotNull("Host must expose Local-Only Hotspot SSID & Passphrase", hsHostRepo.state.value.hotspotInfo)
-        assertEquals("AndroidShare_RMG", hsHostRepo.state.value.hotspotInfo?.ssid)
+        // 4) End-to-end host + guest over REAL localhost sockets: the guest must be approved by the
+        //    host (no channel code exists any more) and only then receive a usable session key.
+        val e2eHostTransport = FakeRadioTransport(wifiOn = true)
+        val e2eHostRepo = buildTestRepo("SocketHost", "E2E_H1", e2eHostTransport, tcpPort = 0)
+        assertTrue(e2eHostRepo.createHostSession())
+        assertEquals(PttPhase.IN_SESSION, e2eHostRepo.state.value.phase)
 
-        // Read actual TCP port bound by host via reflection for ephemeral port test
+        // Read the actual TCP port bound by the host (ephemeral in tests).
         val srvField = PttRepository::class.java.getDeclaredField("tcpServer").apply { isAccessible = true }
-        val actualHsPort = (srvField.get(hsHostRepo) as ServerSocket).localPort
+        val actualPort = (srvField.get(e2eHostRepo) as ServerSocket).localPort
 
-        val hsGuestTransport = FakeRadioTransport(
-            wifiOn = true,
-            gatewayCheck = LocalHotspotGatewayCheck.Ready("127.0.0.1")
+        val e2eGuestTransport = FakeRadioTransport(wifiOn = true).apply { targetConnectHostIp = "127.0.0.1" }
+        val e2eGuestRepo = buildTestRepo("SocketGuest", "E2E_G1", e2eGuestTransport, tcpPort = actualPort)
+
+        val verifiedSession = DiscoveredPttSession(
+            deviceAddress = "02:00:00:00:00:77",
+            sessionId = e2eHostTransport.advertisedSessionId,
+            hostName = "SocketHost",
+            deviceName = "HostPhone",
+            tcpPort = actualPort,
+            protocolVersion = PttProtocol.PROTOCOL_VERSION,
+            lastSeenMs = System.currentTimeMillis(),
+            hostCertificatePin = e2eHostTransport.advertisedPin
         )
-        val hsGuestRepo = buildTestRepo("HotspotGuest", "HS_G1", hsGuestTransport, tcpPort = actualHsPort)
-
-        // Wrong channel code over Local Hotspot -> must fail with AUTH_FAILED (never CONNECT_TIMEOUT!)
-        assertTrue(hsGuestRepo.requestJoinLocalHotspotGateway("BAD000", explicitPort = actualHsPort))
+        assertTrue("Host advertisement must be verified before joining", verifiedSession.isVerifiedAppHost)
+        assertTrue(e2eGuestRepo.requestJoinDiscoveredSession(verifiedSession))
         assertTrue(
-            waitUntil { hsGuestRepo.state.value.phase == PttPhase.DISCONNECTED && hsGuestRepo.state.value.errorCode == PttErrorCode.AUTH_FAILED }
+            "Host must receive a join approval card",
+            waitUntil { e2eHostRepo.state.value.pendingApprovals.size == 1 }
         )
+        assertTrue(waitUntil { e2eGuestRepo.state.value.phase == PttPhase.WAITING_APPROVAL })
+        assertEquals("Guest may not hold a session before approval", PttPhase.WAITING_APPROVAL, e2eGuestRepo.state.value.phase)
 
-        // Correct channel code over Local Hotspot -> Host sees approval request -> accepts -> IN_SESSION!
-        assertTrue(hsGuestRepo.requestJoinLocalHotspotGateway("HOT999", explicitPort = actualHsPort))
-        assertTrue(waitUntil { hsHostRepo.state.value.pendingApprovals.size == 1 })
-        hsHostRepo.approveJoinRequest(hsHostRepo.state.value.pendingApprovals.first().requestId)
-        assertTrue(waitUntil { hsGuestRepo.state.value.phase == PttPhase.IN_SESSION && hsHostRepo.state.value.connectedCount == 2 })
+        e2eHostRepo.approveJoinRequest(e2eHostRepo.state.value.pendingApprovals.first().requestId)
+        assertTrue(waitUntil { e2eGuestRepo.state.value.phase == PttPhase.IN_SESSION })
+        assertTrue(waitUntil { e2eHostRepo.state.value.connectedCount == 2 })
 
-        hsHostRepo.endSessionByUser()
-        assertTrue(waitUntil { hsGuestRepo.state.value.phase == PttPhase.DISCONNECTED })
+        e2eHostRepo.endSessionByUser()
+        assertTrue(waitUntil { e2eGuestRepo.state.value.phase == PttPhase.DISCONNECTED })
+        assertTrue("Host must clean up its client table", e2eHostRepo.state.value.pendingApprovals.isEmpty())
     }
 
     // =========================================================================
@@ -983,7 +1039,6 @@ class PttRegressionTest {
             override fun onDiscoveryFinishedEmpty() {}
             override fun onP2pLinkEstablished(isGroupOwner: Boolean, groupOwnerIp: String) { events += groupOwnerIp }
             override fun onP2pLinkDisconnected() {}
-            override fun onLocalHotspotStarted(ssid: String, passphrase: String) {}
             override fun onTransportFailure(issue: WifiEnvironmentIssue, diagnostic: String) {}
         }
         return events
@@ -1098,7 +1153,7 @@ class PttRegressionTest {
         val sched = ManualTaskScheduler()
         val wdm = WifiDirectManager(appCtx = null, customDriver = driver, scheduler = sched)
         var readyIp: String? = null
-        wdm.startHostingGroup("SESS1", "Host", 49320, onReady = { readyIp = it }, onError = { i, d -> fail("$i:$d") })
+        wdm.startHostingGroup("SESS1", "Host", 49320, certificatePin = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", onReady = { readyIp = it }, onError = { i, d -> fail("$i:$d") })
         driver.currentLinkState = P2pDriver.GroupLinkState(true, true, "192.168.49.1", "DIRECT-Rm-1234")
         sched.advanceBy(400L)                       // group formed -> first credential read (null)
         repeat(12) { sched.advanceBy(600L) }        // each retry is chained 600ms after the previous read-back
