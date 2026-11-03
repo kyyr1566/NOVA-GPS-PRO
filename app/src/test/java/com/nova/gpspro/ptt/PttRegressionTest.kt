@@ -709,10 +709,11 @@ class PttRegressionTest {
         // 5) Push-to-Talk Half-Duplex & live UDP voice packet delivery from Guest -> Host
         guestRepo.onTalkTouchDown()
         assertTrue(
-            "Guest button turns Green (#14866D) and Host turns Amber (#D99A32)",
+            "Guest button turns Green (#14866D), Host turns Amber (#D99A32), and mic encoder callback is armed",
             waitUntil {
                 guestRepo.state.value.buttonState == PttButtonVisualState.SELF_SPEAKING_GREEN &&
-                    hostRepo.state.value.buttonState == PttButtonVisualState.REMOTE_SPEAKING_AMBER
+                    hostRepo.state.value.buttonState == PttButtonVisualState.REMOTE_SPEAKING_AMBER &&
+                    guestAudio.activeFrameSender != null
             }
         )
         // Emit an encoded ADPCM frame from Guest's microphone callback
