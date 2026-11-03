@@ -36,7 +36,11 @@ import com.nova.gpspro.onboarding.OnboardingView
 import com.nova.gpspro.onboarding.ShortSplashView
 import com.nova.gpspro.portal.QrCodec
 import com.nova.gpspro.portal.QrScanner
+import com.nova.gpspro.ptt.PttPage
+import com.nova.gpspro.ptt.PttService
 import com.nova.gpspro.ui.*
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -48,6 +52,10 @@ class MainActivity : Activity() {
     lateinit var message: CenterMessage; private set
 
     private lateinit var activityRoot: FrameLayout
+    private var overlayContainer: FrameLayout? = null
+    private var pttOverlayView: PttPage? = null
+    private var pttOpen = false
+    private var pttBackCallback: Any? = null
     private var activationView: ActivationView? = null
     private var mainUiReady = false
     private var onboardingShowing = false
@@ -82,7 +90,9 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         app = application as NovaApp
         units = Units(this, app.settings)
-        current = (savedInstanceState?.getInt("page") ?: 0).coerceIn(0, 5)
+        val openPttFromNotification = intent?.getBooleanExtra(PttService.EXTRA_OPEN_PTT, false) == true
+        pttOpen = (savedInstanceState?.getBoolean("ptt_open") ?: false) || openPttFromNotification
+        current = if (openPttFromNotification) 3 else (savedInstanceState?.getInt("page") ?: 0).coerceIn(0, 5)
 
         activityRoot = FrameLayout(this).apply {
             setBackgroundColor(C.BG)
@@ -164,7 +174,10 @@ class MainActivity : Activity() {
 
     private fun createMainUi(showSplash: Boolean) {
         activityRoot.removeAllViews()
+        overlayContainer = null
+        pttOverlayView = null
         activationView = null
+        navItems.clear()
         setMainSystemBars()
 
         val column = vbox()
@@ -177,6 +190,8 @@ class MainActivity : Activity() {
         column.addView(content, lp(h = 0, weight = 1f))
         column.addView(buildBottomBar(), lp())
         activityRoot.addView(column, FrameLayout.LayoutParams(-1, -1))
+        val overlayHost = FrameLayout(this).also { overlayContainer = it }
+        activityRoot.addView(overlayHost, FrameLayout.LayoutParams(-1, -1))
         message = CenterMessage(activityRoot)
         mainUiReady = true
 
@@ -196,6 +211,7 @@ class MainActivity : Activity() {
         // exposing the selected page. Otherwise onStart() performs this in the usual order.
         if (isStartedFlag) startMainGpsRuntime()
         selectTab(current)
+        if (pttOpen) openWalkieTalkie()
         if (isStartedFlag) maybeAskPermission()
     }
 
@@ -431,6 +447,7 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         isStartedFlag = true
+        app.ptt.isAppInForeground = true
         if (onboardingShowing || splashShowing) return
         if (!mainUiReady && app.licenseManager.isActivated()) {
             current = 0
@@ -465,16 +482,91 @@ class MainActivity : Activity() {
             app.navigation.flush()
         }
         isStartedFlag = false
+        app.ptt.isAppInForeground = false
         super.onStop()
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        if (intent != null) setIntent(intent)
+        if (intent?.getBooleanExtra(PttService.EXTRA_OPEN_PTT, false) == true) {
+            pttOpen = true
+            if (mainUiReady) {
+                showPage(3)
+                openWalkieTalkie()
+            }
+        }
+    }
+
+    fun openWalkieTalkie() {
+        val host = overlayContainer ?: return
+        pttOpen = true
+        var page = pttOverlayView
+        if (page == null) {
+            page = PttPage(this) { closeWalkieTalkie() }
+            pttOverlayView = page
+            host.addView(page, FrameLayout.LayoutParams(-1, -1))
+            page.alpha = 0f
+            page.animate().alpha(1f).setDuration(170).start()
+        } else {
+            page.visibility = View.VISIBLE
+            page.alpha = 1f
+        }
+        registerPttBackCallback(true)
+    }
+
+    fun closeWalkieTalkie() {
+        pttOpen = false
+        registerPttBackCallback(false)
+        val host = overlayContainer
+        val page = pttOverlayView
+        pttOverlayView = null
+        if (host != null && page != null) {
+            page.animate().alpha(0f).setDuration(140).withEndAction {
+                host.removeView(page)
+            }.start()
+        }
+    }
+
+    private fun registerPttBackCallback(enable: Boolean) {
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (enable && pttBackCallback == null) {
+                val cb = OnBackInvokedCallback {
+                    if (pttOpen) closeWalkieTalkie()
+                }
+                pttBackCallback = cb
+                onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                    cb
+                )
+            } else if (!enable) {
+                (pttBackCallback as? OnBackInvokedCallback)?.let {
+                    try { onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it) } catch (_: Throwable) {}
+                }
+                pttBackCallback = null
+            }
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (pttOpen) {
+            closeWalkieTalkie()
+            return
+        }
+        @Suppress("DEPRECATION")
+        super.onBackPressed()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt("page", current)
+        outState.putBoolean("ptt_open", pttOpen)
     }
 
     // ------------------------------------------------------------- language
     fun applyLanguage() {
+        PttService.syncWithState(this, app.ptt.state.value)
         recreate()
     }
 
@@ -509,6 +601,10 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_LOC) app.gps.refresh()
         if (requestCode == REQ_PERM) { val cb = permCb; permCb = null; cb?.invoke(grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) }
+        if (requestCode == REQ_PERMS_MULTI) {
+            val cb = permsMultiCb; permsMultiCb = null
+            cb?.invoke(grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED })
+        }
     }
 
     fun openLocationSettings() {
@@ -563,11 +659,17 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------- generic result / permission hooks (Portal)
     private var resultCb: ((Boolean, Intent?) -> Unit)? = null
     private var permCb: ((Boolean) -> Unit)? = null
+    private var permsMultiCb: ((Boolean) -> Unit)? = null
     fun startForResult(i: Intent, cb: (Boolean, Intent?) -> Unit) {
         resultCb = cb
         try { startActivityForResult(i, REQ_GENERIC) } catch (_: Exception) { resultCb = null; message.error(getString(R.string.err_save)) }
     }
     fun requestPerm(perm: String, cb: (Boolean) -> Unit) { permCb = cb; requestPermissions(arrayOf(perm), REQ_PERM) }
+    fun requestPerms(perms: Array<String>, cb: (Boolean) -> Unit) {
+        if (perms.isEmpty()) { cb(true); return }
+        permsMultiCb = cb
+        requestPermissions(perms, REQ_PERMS_MULTI)
+    }
 
     fun thumbCache(path: String, size: Int): Bitmap? {
         val key = "$path@$size"
@@ -578,6 +680,7 @@ class MainActivity : Activity() {
     fun clearThumbCache() = thumbs.evictAll()
 
     override fun onDestroy() {
+        registerPttBackCallback(false)
         activationCancellation?.cancel()
         activationCancellation = null
         activationExecutor?.shutdownNow()
@@ -593,5 +696,6 @@ class MainActivity : Activity() {
         private const val REQ_FOLDER = 13
         private const val REQ_GENERIC = 14
         private const val REQ_PERM = 15
+        private const val REQ_PERMS_MULTI = 16
     }
 }

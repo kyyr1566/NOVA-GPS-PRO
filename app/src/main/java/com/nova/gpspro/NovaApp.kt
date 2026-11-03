@@ -7,6 +7,7 @@ import com.nova.gpspro.navigation.NavigationEngine
 import com.nova.gpspro.settings.SettingsRepository
 import com.nova.gpspro.ui.C
 import com.nova.gpspro.license.LicenseManager
+import com.nova.gpspro.ptt.PttRepository
 
 class NovaApp : Application() {
     lateinit var settings: SettingsRepository; private set
@@ -14,6 +15,7 @@ class NovaApp : Application() {
     lateinit var gps: LocationEngine; private set
     lateinit var navigation: NavigationEngine; private set
     lateinit var licenseManager: LicenseManager; private set
+    lateinit var ptt: PttRepository; private set
 
     override fun onCreate() {
         super.onCreate()
@@ -23,9 +25,11 @@ class NovaApp : Application() {
         destinations = DestinationRepository(this)
         gps = LocationEngine(this)
         navigation = NavigationEngine(this, gps, destinations)
+        ptt = PttRepository(this)
     }
 
     fun clearAllData() {
+        ptt.endSessionByUser()
         navigation.clearAll()
         destinations.clearAll()
     }

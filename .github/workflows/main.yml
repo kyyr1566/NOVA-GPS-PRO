@@ -1,4 +1,4 @@
-name: Build NOVA GPS PRO APK
+name: Build RMG-GPS-Pro Walkie-Talkie APK
 
 on:
   workflow_dispatch:
@@ -24,11 +24,12 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run unit tests (onboarding, icons, theme, GPS, radar, portal, splash)
+      - name: Run unit tests (testDebugUnitTest)
         run: |
           chmod +x gradlew
           set -o pipefail
           ./gradlew --no-daemon --stacktrace testDebugUnitTest \
+            --tests "com.nova.gpspro.ptt.PttWalkieTalkieTest" \
             --tests "com.nova.gpspro.OnboardingManagerTest" \
             --tests "com.nova.gpspro.ThemeSourceTest" \
             --tests "com.nova.gpspro.ThemeContrastTest" \
@@ -43,22 +44,39 @@ jobs:
             --tests "com.nova.gpspro.NavFitTest" \
             --tests "com.nova.gpspro.SpeedoModeTest" 2>&1 | tee test.log
 
-      - name: Build Debug APK
+      - name: Run Android Lint (lintDebug)
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace lintDebug 2>&1 | tee lint.log
+
+      - name: Build Debug APK (assembleDebug) & verify non-zero APK
         run: |
           chmod +x gradlew
           set -o pipefail
           ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
+          SRC_APK="app/build/outputs/apk/debug/app-debug.apk"
+          OUT_APK="app/build/outputs/apk/debug/RMG-GPS-Pro-WalkieTalkie-debug.apk"
+          test -f "$SRC_APK"
+          cp -f "$SRC_APK" "$OUT_APK"
+          SIZE=$(stat -c%s "$OUT_APK")
+          echo "Generated APK: $OUT_APK (${SIZE} bytes)"
+          if [ "$SIZE" -le 0 ]; then
+            echo "ERROR: APK size is zero!"
+            exit 1
+          fi
+          sha256sum "$OUT_APK"
 
       - name: Annotate failure diagnostics
         if: failure()
         run: |
-          ERR=$(grep -E "e: |error:|FAILED|AssertionError|Exception|Caused by:" test.log build.log 2>/dev/null | head -n 12 | tr '\n' ' | ' | head -c 900)
-          if [ -z "$ERR" ]; then ERR=$(tail -n 30 test.log build.log 2>/dev/null | tr '\n' ' | ' | head -c 900); fi
+          ERR=$(grep -E "e: |error:|FAILED|AssertionError|Exception|Caused by:" test.log lint.log build.log 2>/dev/null | head -n 14 | tr '\n' ' | ' | head -c 950)
+          if [ -z "$ERR" ]; then ERR=$(tail -n 30 test.log lint.log build.log 2>/dev/null | tr '\n' ' | ' | head -c 950); fi
           echo "::error title=Diagnostics::$ERR"
 
-      - name: Upload APK
+      - name: Upload RMG-GPS-Pro-WalkieTalkie-debug.apk Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NOVA-GPS-PRO-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: RMG-GPS-Pro-WalkieTalkie-debug.apk
+          path: app/build/outputs/apk/debug/RMG-GPS-Pro-WalkieTalkie-debug.apk
           if-no-files-found: error
