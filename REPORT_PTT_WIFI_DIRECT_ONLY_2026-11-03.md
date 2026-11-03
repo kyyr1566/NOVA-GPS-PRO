@@ -110,7 +110,7 @@ TCP إلى `goip`/`192.168.49.1`/عنوان واجهة `p2p*` → تحقق pin +
 |---|---|
 | `testDebugUnitTest` (27 اختباراً في `PttWalkieTalkieTest` + `PttRegressionTest`، بما فيها 13 اختباراً آخر غير PTT) | ✅ |
 | `lintDebug` | ✅ |
-| `assembleDebug` + التحقق من حجم APK | ✅ **2,378,194 بايت** |
+| `assembleDebug` + التحقق من حجم APK | ✅ **2,378,221 بايت** |
 | رفع الـ APK كـ Artifact | ✅ |
 
 اختبارات جديدة/مُعاد كتابتها في هذه المرحلة:
@@ -125,8 +125,9 @@ TCP إلى `goip`/`192.168.49.1`/عنوان واجهة `p2p*` → تحقق pin +
 9. اختبار end-to-end على مقابس localhost حقيقية: `CreateSession` بلا رمز → بطاقة موافقة → قبول → `IN_SESSION` من الطرفين → إنهاء المضيف يُنظّف جدول العملاء
 10. اختبار الـ fallback: الجيران الخامّون **لا يُعرضون** كجلسات مؤكدة
 
-- التشغيل الناجح النهائي: https://github.com/kyyr1566/NOVA-GPS-PRO/actions/runs/41714936735
-- الـ APK: تبويب **Artifacts** في نفس الرابط → `RMG-GPS-Pro-WalkieTalkie-Fixed-debug.apk` (2,378,194 بايت · artifact id 13270500029 · commit `22c0c74`)
+- التشغيل الناجح النهائي: https://github.com/kyyr1566/NOVA-GPS-PRO/actions/runs/41715736706
+- الـ APK: تبويب **Artifacts** في نفس الرابط → `RMG-GPS-Pro-WalkieTalkie-Fixed-debug.apk` (2,378,221 بايت · artifact id 13269388008 · commit `747f038`)
+  — حجم الـ APK يتغيّر بضعة بايتات بين التشغيلات، وكل تشغيل ناجح يرفع الـ APK الخاص به تحت نفس الاسم.
 
 ---
 
