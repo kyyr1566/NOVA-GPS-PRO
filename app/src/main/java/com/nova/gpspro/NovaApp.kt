@@ -1,7 +1,6 @@
 package com.nova.gpspro
 
 import android.app.Application
-import com.nova.gpspro.connect.RmgConnectManager
 import com.nova.gpspro.data.DestinationRepository
 import com.nova.gpspro.location.LocationEngine
 import com.nova.gpspro.navigation.NavigationEngine
@@ -15,7 +14,6 @@ class NovaApp : Application() {
     lateinit var gps: LocationEngine; private set
     lateinit var navigation: NavigationEngine; private set
     lateinit var licenseManager: LicenseManager; private set
-    lateinit var rmgConnect: RmgConnectManager; private set
 
     override fun onCreate() {
         super.onCreate()
@@ -25,7 +23,6 @@ class NovaApp : Application() {
         destinations = DestinationRepository(this)
         gps = LocationEngine(this)
         navigation = NavigationEngine(this, gps, destinations)
-        rmgConnect = RmgConnectManager(this, gps)
     }
 
     fun clearAllData() {

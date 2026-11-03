@@ -24,12 +24,11 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Run unit tests (RMG CONNECT, onboarding, icons, theme, GPS, radar, portal, splash)
+      - name: Run unit tests (onboarding, icons, theme, GPS, radar, portal, splash)
         run: |
           chmod +x gradlew
           set -o pipefail
           ./gradlew --no-daemon --stacktrace testDebugUnitTest \
-            --tests "com.nova.gpspro.RmgConnectTest" \
             --tests "com.nova.gpspro.OnboardingManagerTest" \
             --tests "com.nova.gpspro.ThemeSourceTest" \
             --tests "com.nova.gpspro.ThemeContrastTest" \
