@@ -1019,7 +1019,7 @@ class RmgConnectManager(
             latitude = state.latitude,
             longitude = state.longitude,
             accuracyM = state.accuracy,
-            speedMps = state.speed,
+            speedMps = state.speed.toFloat(),
             timestampMs = System.currentTimeMillis()
         )
         broadcastPacket(pkt)
@@ -1035,7 +1035,7 @@ class RmgConnectManager(
                     latitude = s.latitude,
                     longitude = s.longitude,
                     accuracyM = s.accuracy,
-                    speedMps = s.speed,
+                    speedMps = s.speed.toFloat(),
                     timestampMs = System.currentTimeMillis()
                 )
             )
