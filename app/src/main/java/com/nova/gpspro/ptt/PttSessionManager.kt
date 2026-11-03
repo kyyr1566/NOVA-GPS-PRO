@@ -296,7 +296,7 @@ class PttSessionManager(
         TimeoutCheckResult(timedOut, floorExpired)
     }
 
-    fun setPeerLocallyMuted(participantId: String, muted: Boolean) = synchronized(lock) {
+    fun setPeerLocallyMuted(participantId: String, muted: Boolean): Unit = synchronized(lock) {
         if (participantId == localParticipantId) return
         if (muted) locallyMutedPeerIds.add(participantId) else locallyMutedPeerIds.remove(participantId)
     }

@@ -348,7 +348,7 @@ object OpusMediaCodecHelper {
         var hasEnc = false
         var hasDec = false
         for (info in list) {
-            if (!info.types.any { it.equals(MIME_OPUS, ignoreCase = true) }) continue
+            if (!info.supportedTypes.any { it.equals(MIME_OPUS, ignoreCase = true) }) continue
             if (info.isEncoder) hasEnc = true else hasDec = true
         }
         hasEnc && hasDec
