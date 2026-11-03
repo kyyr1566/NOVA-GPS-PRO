@@ -738,7 +738,7 @@ class PttRepository(
                     nowMs = now
                 )
                 // Key released ONLY now: bound to this specific approval nonce.
-                val approvedKey = PttProtocol.deriveApprovalKey(sKey, pending.approvalNonce)
+                val approvedKey = PttSecurity.deriveApprovalKey(sKey, pending.approvalNonce)
                 // Media traffic must use the approval-bound key too, otherwise a guest that was only
                 // ever PENDING could still decode/emit voice. Every client gets its own nonce, so this
                 // is also a per-connection key rather than a shared session-wide one.
@@ -1324,8 +1324,11 @@ class PttRepository(
             }
 
             val serverNonce = PttSecurity.randomHex(16)
-            val hostSpkiHex = hostPublicKeyBytes.takeIf { it.isNotEmpty() }
-                ?.let { PttProtocol.toHex(it) }.orEmpty()
+            val hostSpkiHex = if (hostPublicKeyBytes.isNotEmpty()) {
+                PttSecurity.toHex(hostPublicKeyBytes)
+            } else {
+                ""
+            }
             val challenge = PttProtocol.ControlFrame.HelloChallenge(
                 protocolVersion = PttProtocol.PROTOCOL_VERSION,
                 sessionId = currentSessionId,
@@ -1645,7 +1648,7 @@ class PttRepository(
                     return@execute
                 }
                 val offeredSpki = try {
-                    PttProtocol.fromHex(challenge.hostPublicKeyHex)
+                    PttSecurity.fromHex(challenge.hostPublicKeyHex)
                 } catch (_: Throwable) {
                     ByteArray(0)
                 }
@@ -1675,7 +1678,7 @@ class PttRepository(
                     return@execute
                 }
 
-                val derivedBaseKey = PttProtocol.deriveSessionKeyFromCertificate(
+                val derivedBaseKey = PttSecurity.deriveSessionKeyFromCertificate(
                     // Both sides derive from the same raw SPKI bytes: the host from its own Keystore
                     // key, the guest from the SPKI it verified against the advertised pin below.
                     hostPublicKeyBytes = verifiedHostPublicKeyBytes,
@@ -1763,7 +1766,7 @@ class PttRepository(
                             )
                             return@execute
                         }
-                        val approvedSessionKey = PttProtocol.deriveApprovalKey(derivedBaseKey, pendingApprovalNonce)
+                        val approvedSessionKey = PttSecurity.deriveApprovalKey(derivedBaseKey, pendingApprovalNonce)
                         val approvedMediaKey = PttSecurity.deriveMediaKey(approvedSessionKey, challenge.sessionId)
                         synchronized(stateLock) {
                             sessionKey = approvedSessionKey

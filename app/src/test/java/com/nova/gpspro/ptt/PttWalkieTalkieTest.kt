@@ -144,14 +144,14 @@ class PttWalkieTalkieTest {
         val baseKey = PttSecurity.deriveSessionKeyFromCertificate(hostKp.public.encoded, sessionId, PttSecurity.randomHex(16))
 
         val approvalNonce = PttSecurity.randomHex(16)
-        val hostApproved = PttProtocol.deriveApprovalKey(baseKey, approvalNonce)
-        val guestApproved = PttProtocol.deriveApprovalKey(baseKey, approvalNonce)
+        val hostApproved = PttSecurity.deriveApprovalKey(baseKey, approvalNonce)
+        val guestApproved = PttSecurity.deriveApprovalKey(baseKey, approvalNonce)
         assertArrayEquals("Approval must produce the same key on both sides", hostApproved, guestApproved)
 
         assertFalse("The approved key must differ from the un-approved base key", hostApproved.contentEquals(baseKey))
         assertFalse(
             "A different approval nonce must produce a different key",
-            hostApproved.contentEquals(PttProtocol.deriveApprovalKey(baseKey, PttSecurity.randomHex(16)))
+            hostApproved.contentEquals(PttSecurity.deriveApprovalKey(baseKey, PttSecurity.randomHex(16)))
         )
 
         // Pending (unapproved) requests never own a usable approved key.
